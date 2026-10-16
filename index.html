@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v13.13';
+const VERSION = 'v13.14';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -4938,8 +4938,8 @@ function drawDecorations() {
 canvas.addEventListener('wheel', e => {
   if (!duelAnim) return;
   const rect = canvas.getBoundingClientRect();
-  const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
-  const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+  const p = toCanvasXY(e.clientX, e.clientY);
+  const mx = p.cx, my = p.cy;
   // 日志区域：x=760~1160, y=80~580
   if (mx >= 760 && mx <= 1160 && my >= 80 && my <= 580) {
     e.preventDefault();
@@ -4951,10 +4951,8 @@ canvas.addEventListener('wheel', e => {
 
 canvas.addEventListener('click', e => {
   try {
-  const rect = canvas.getBoundingClientRect();
-  const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-  // 统一横屏：坐标固定用横屏公式，不做竖屏交换
-  const cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H;
+  const pos = toCanvasXY(e.clientX, e.clientY);
+  const cx = pos.cx, cy = pos.cy;
   // 游戏结束时：点击"再来"按钮重启
   if (game.gameOver) {
     if (game._restartBtn && cx >= game._restartBtn.x && cx <= game._restartBtn.x+game._restartBtn.w &&
@@ -5452,9 +5450,8 @@ let isDragging = false, dragStartX = 0, dragStartY = 0, dragViewX = 0, dragViewY
 canvas.addEventListener('mousedown', e => {
   try {
   if (codexOpen || game.gameOver || game.heroMenuOpen) return;
-  const rect = canvas.getBoundingClientRect();
-  const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-  let cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H;
+  const pos = toCanvasXY(e.clientX, e.clientY);
+  let cx = pos.cx, cy = pos.cy;
   if (cy < HUD_H) return;
   cy -= HUD_H;
   // 桌面鼠标：右下技能盘按钮
@@ -5512,9 +5509,8 @@ canvas.addEventListener('mousedown', e => {
 canvas.addEventListener('mousemove', e => {
   // 桌面摇杆拖动
   if (joy.active && joy.id==='mouse') {
-    const rect = canvas.getBoundingClientRect();
-    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-    let cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H; if(cy>=HUD_H)cy-=HUD_H;
+    const pos = toCanvasXY(e.clientX, e.clientY);
+    let cx = pos.cx, cy = pos.cy; if(cy>=HUD_H)cy-=HUD_H;
     let jdx = cx - joy.ox, jdy = cy - joy.oy;
     const d = Math.hypot(jdx, jdy);
     if (d > JOY_R) { jdx = jdx/d*JOY_R; jdy = jdy/d*JOY_R; }
@@ -5524,9 +5520,8 @@ canvas.addEventListener('mousemove', e => {
     return;
   }
   if (mmDragging) {
-    const rect = canvas.getBoundingClientRect();
-    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-    let cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H; if(cy>=HUD_H)cy-=HUD_H;
+    const pos = toCanvasXY(e.clientX, e.clientY);
+    let cx = pos.cx, cy = pos.cy; if(cy>=HUD_H)cy-=HUD_H;
     const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
@@ -5535,9 +5530,8 @@ canvas.addEventListener('mousemove', e => {
     return;
   }
   if (!isDragging) return;
-  const rect = canvas.getBoundingClientRect();
-  const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
-  let cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H; if(cy>=HUD_H)cy-=HUD_H;
+  const pos = toCanvasXY(e.clientX, e.clientY);
+  let cx = pos.cx, cy = pos.cy; if(cy>=HUD_H)cy-=HUD_H;
   const ddx = cx - dragStartX, ddy = cy - dragStartY;
   if (Math.abs(ddx) > 3 || Math.abs(ddy) > 3) dragMoved = true;
   viewX = Math.max(0, Math.min(WORLD_W - VIEW_W/zoom, dragViewX - ddx/zoom));
@@ -5557,9 +5551,8 @@ canvas.addEventListener('mouseleave', () => {
 // Touch事件支持（手机拖拽）
 function getTouchPos(e) {
   const t = e.touches[0] || e.changedTouches[0];
-  const rect = canvas.getBoundingClientRect();
-  const dx = t.clientX - rect.left, dy = t.clientY - rect.top;
-  let cx = dx / rect.width * CANVAS_W, cy = dy / rect.height * CANVAS_H;
+  const pos = toCanvasXY(t.clientX, t.clientY);
+  let cx = pos.cx, cy = pos.cy;
   if (cy >= HUD_H) cy -= HUD_H;
   return { cx, cy };
 }
@@ -6572,15 +6565,35 @@ function startSimulation(rounds) {
 }
 
 // ============ 自适应尺寸 =====
+// 王者荣耀式强制横屏：竖屏时整个游戏容器旋转90°横向填满竖屏，竖握也是满屏横屏画面，无竖屏选项
 function resizeCanvas() {
   const cw = window.innerWidth, ch = window.innerHeight;
   const canvas = document.getElementById('gameCanvas');
-  // 统一横屏：canvas 始终按横屏宽高比呈现并居中，不随设备方向旋转/拉伸；玩家横握游玩
+  const gc = document.getElementById('game-container');
   const ratio = CANVAS_W / CANVAS_H;
-  let w = cw, h = w / ratio;
-  if (h > ch) { h = ch; w = h * ratio; }
-  canvas.style.width = w + 'px';
-  canvas.style.height = h + 'px';
+  if (cw < ch) {
+    // 竖屏：容器旋转90°填满竖屏，canvas 铺满旋转后容器（纵向拉伸，王者同款强制横屏）
+    gc.style.width = ch + 'px';
+    gc.style.height = cw + 'px';
+    gc.style.position = 'absolute';
+    gc.style.top = '50%'; gc.style.left = '50%';
+    gc.style.marginLeft = (-ch/2) + 'px';
+    gc.style.marginTop = (-cw/2) + 'px';
+    gc.style.transform = 'rotate(90deg)';
+    gc.style.transformOrigin = 'center center';
+    canvas.style.width = ch + 'px';
+    canvas.style.height = cw + 'px';
+  } else {
+    // 横屏：正常横屏比例居中
+    gc.style.width = '100vw'; gc.style.height = '100vh';
+    gc.style.position = ''; gc.style.top = ''; gc.style.left = '';
+    gc.style.marginLeft = ''; gc.style.marginTop = '';
+    gc.style.transform = '';
+    let w = cw, h = w / ratio;
+    if (h > ch) { h = ch; w = h * ratio; }
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+  }
   // 游戏仅横屏：默认视野拉远看更多地图并纵向居中，内容饱满不逼仄。用户手动调过后不再覆盖。
   if (!zoomManual) {
     zoom = 0.7;
@@ -6588,6 +6601,17 @@ function resizeCanvas() {
     viewX = 0;
     clampView();
   }
+}
+// 屏幕(clientX/Y) → canvas逻辑坐标；竖屏旋转90°时交换映射
+function toCanvasXY(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const dx = clientX - rect.left, dy = clientY - rect.top;
+  const ux = dx / rect.width, uy = dy / rect.height;
+  if (window.innerWidth < window.innerHeight) {
+    // 竖屏旋转90°(顺时针)：视觉横轴→逻辑Y，视觉纵轴反向→逻辑X
+    return { cx: CANVAS_W*(1-uy), cy: CANVAS_H*ux };
+  }
+  return { cx: ux*CANVAS_W, cy: uy*CANVAS_H };
 }
 window.addEventListener('resize', resizeCanvas);
 window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 100));
@@ -6610,10 +6634,17 @@ window.__debug = {
   clearLogs: function() { debugLogs.length = 0; },
   simulateClick: function(x, y) {
     const rect = canvas.getBoundingClientRect();
+    let vx, vy;
+    if (window.innerWidth < window.innerHeight) {
+      // 竖屏旋转90°：逻辑→视觉反向映射
+      vx = rect.left + (y / CANVAS_H) * rect.width;
+      vy = rect.top + (1 - x / CANVAS_W) * rect.height;
+    } else {
+      vx = rect.left + x / CANVAS_W * rect.width;
+      vy = rect.top + y / CANVAS_H * rect.height;
+    }
     const ev = new MouseEvent('click', {
-      clientX: rect.left + x / CANVAS_W * rect.width,
-      clientY: rect.top + y / CANVAS_H * rect.height,
-      bubbles: true
+      clientX: vx, clientY: vy, bubbles: true
     });
     canvas.dispatchEvent(ev);
   },
