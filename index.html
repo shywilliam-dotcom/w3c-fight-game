@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v13.15';
+const VERSION = 'v13.16';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -179,7 +179,7 @@ const VIEW_W = 1200, VIEW_H = 720; // 视口尺寸
 // ============ 大战场坐标系统 ============
 const WORLD_W = 4200, WORLD_H = 2160;
 const SCALE = 3;
-let zoom = 0.7;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节
+let zoom = 0.56;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节（默认0.56=较0.7缩小20%看更多地图）
 const ZOOM_MIN = 0.45, ZOOM_MAX = 1.2;
 let zoomManual = false;    // 用户是否手动调过 zoom（避免竖屏自适应覆盖）
 let viewX = 0, viewY = 480;
@@ -4314,7 +4314,7 @@ function render() {
   }
   // 左下角按钮（从右下角移到左下角）
   const btnW = 70, btnH = 30;
-  const btnStartX = 10, btnStartY = 620;
+  const btnStartX = 970, btnStartY = 0;
   const btns = [
     {x:0, y:0, label:game.speed+'x', color:'#607D8B'},
     {x:1, y:0, label:game.autoRevive?'AUTO✓':'AUTO', color:game.autoRevive?'#4CAF50':'#795548'},
@@ -4341,8 +4341,8 @@ function render() {
   });
 
   // v12.10: 小地图圆角边框 + 半透明视口填充
-  // v13.15: 小地图尺寸加倍(480×288)，渲染用canvas坐标(游戏区顶部在HUD_H之下)，触控用游戏区坐标mmY=0，两处已对齐
-  const mmW = 480, mmH = 288, mmX = 8, mmY = HUD_H;
+  // v13.16: 小地图480×288移到左下角，渲染用canvas坐标(游戏区底部mmY=432+顶部HUD_H=492)，触控用游戏区坐标mmY=432，两处对齐
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 492;
   const mmScaleX = mmW / WORLD_W, mmScaleY = mmH / WORLD_H;
   ctx.save();
   rr(ctx, mmX, mmY, mmW, mmH, 8);
@@ -4998,7 +4998,7 @@ canvas.addEventListener('click', e => {
   if (dragMoved || mmDragging) { dragMoved = false; mmDragging = false; return; }
 
   // 小地图点击跳转（覆盖层菜单打开时不响应，避免拦截选兵按钮）
-  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 432;
   if (!codexOpen && !game.altarPickMenu && cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
@@ -5009,7 +5009,7 @@ canvas.addEventListener('click', e => {
 
   // canvas左下角按钮检测（从右下角移到左下角）
   const btnW = 70, btnH = 30;
-  const btnStartX = 10, btnStartY = 620;
+  const btnStartX = 970, btnStartY = 0;
   const btns = [
     {x:0, y:0, act:'speed'},
     {x:1, y:0, act:'auto'},
@@ -5481,14 +5481,14 @@ canvas.addEventListener('mousedown', e => {
       }
     }
     // 左下摇杆
-    if (cx < 320 && cy > 450 && cy < 600) {
+    if (cx >= 500 && cx < 820 && cy > 450 && cy < 600) {
       joy.active = true; joy.id = 'mouse'; joy.ox = cx; joy.oy = cy; joy.dx = 0; joy.dy = 0;
       mh._joyDir = {dx:0, dy:0}; mh._manualOrder = null;
       return;
     }
   }
   // 小地图点击/拖拽（左上角）
-  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 432;
   if (cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     mmDragging = true;
     const wx = (cx - mmX) / mmW * WORLD_W;
@@ -5536,7 +5536,7 @@ canvas.addEventListener('mousemove', e => {
   if (mmDragging) {
     const pos = toCanvasXY(e.clientX, e.clientY);
     let cx = pos.cx, cy = pos.cy; if(cy>=HUD_H)cy-=HUD_H;
-    const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
+    const mmW = 480, mmH = 288, mmX = 8, mmY = 432;
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
     viewX = Math.max(0, Math.min(WORLD_W - VIEW_W/zoom, wx - (VIEW_W/zoom)/2));
@@ -5574,7 +5574,7 @@ let mmDragging = false; // 小地图滑动中
 // 王者荣耀式虚拟摇杆（左下）+ 技能盘（右下）
 const joy = { active:false, id:null, ox:0, oy:0, dx:0, dy:0 };
 const JOY_R = 55;          // 摇杆底座半径
-const joyBtn = { x:150, y:545 };  // 摇杆默认中心（未触发时显示在这里）
+const joyBtn = { x:560, y:545 };  // 摇杆默认中心（未触发时显示在这里；v13.16右移避开左下小地图）
 // 技能盘按钮（屏幕canvas坐标，游戏区cy）
 const skillBtns = {
   atk:   { x:1095, y:615, r:46 },   // 普攻（最大，最靠右下）
@@ -5606,7 +5606,7 @@ canvas.addEventListener('touchstart', e => {
     }
   }
   // 2) 左下摇杆区（有受控英雄时，触摸左下启动摇杆走位）
-  if (h && cx < 320 && cy > 450 && cy < 600) {
+  if (h && cx >= 500 && cx < 820 && cy > 450 && cy < 600) {
     e.preventDefault();
     joy.active = true; joy.id = e.touches[0].identifier;
     joy.ox = cx; joy.oy = cy; joy.dx = 0; joy.dy = 0;
@@ -5615,7 +5615,7 @@ canvas.addEventListener('touchstart', e => {
     return;
   }
   // 3) 小地图（左上角）触摸：启动滑动跟随
-  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 432;
   if (cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     e.preventDefault();
     mmDragging = true;
@@ -5663,7 +5663,7 @@ canvas.addEventListener('touchmove', e => {
   }
   // 小地图滑动跟随（左上角）
   if (mmDragging) {
-    const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
+    const mmW = 480, mmH = 288, mmX = 8, mmY = 432;
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
     viewX = Math.max(0, Math.min(WORLD_W - VIEW_W/zoom, wx - (VIEW_W/zoom)/2));
@@ -6598,19 +6598,17 @@ function resizeCanvas() {
     canvas.style.width = ch + 'px';
     canvas.style.height = cw + 'px';
   } else {
-    // 横屏：正常横屏比例居中
+    // 横屏：canvas 铺满整个窗口（拉伸填满、贴左上角无空隙；顶部为资源条HUD，下方无黑边留空）
     gc.style.width = '100vw'; gc.style.height = '100vh';
     gc.style.position = ''; gc.style.top = ''; gc.style.left = '';
     gc.style.marginLeft = ''; gc.style.marginTop = '';
     gc.style.transform = '';
-    let w = cw, h = w / ratio;
-    if (h > ch) { h = ch; w = h * ratio; }
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
+    canvas.style.width = cw + 'px';
+    canvas.style.height = ch + 'px';
   }
   // 游戏仅横屏：默认视野拉远看更多地图并纵向居中，内容饱满不逼仄。用户手动调过后不再覆盖。
   if (!zoomManual) {
-    zoom = 0.7;
+    zoom = 0.56;
     viewY = Math.max(0, (WORLD_H - VIEW_H/zoom)/2);
     viewX = 0;
     clampView();
@@ -6623,7 +6621,7 @@ function toCanvasXY(clientX, clientY) {
   const ux = dx / rect.width, uy = dy / rect.height;
   if (window.innerWidth < window.innerHeight) {
     // 竖屏旋转90°(顺时针)：视觉横轴→逻辑Y，视觉纵轴反向→逻辑X
-    return { cx: CANVAS_W*(1-uy), cy: CANVAS_H*ux };
+    return { cx: CANVAS_W*uy, cy: CANVAS_H*(1-ux) };
   }
   return { cx: ux*CANVAS_W, cy: uy*CANVAS_H };
 }
@@ -6651,8 +6649,8 @@ window.__debug = {
     let vx, vy;
     if (window.innerWidth < window.innerHeight) {
       // 竖屏旋转90°：逻辑→视觉反向映射
-      vx = rect.left + (y / CANVAS_H) * rect.width;
-      vy = rect.top + (1 - x / CANVAS_W) * rect.height;
+      vx = rect.left + (1 - y / CANVAS_H) * rect.width;
+      vy = rect.top + (x / CANVAS_W) * rect.height;
     } else {
       vx = rect.left + x / CANVAS_W * rect.width;
       vy = rect.top + y / CANVAS_H * rect.height;
