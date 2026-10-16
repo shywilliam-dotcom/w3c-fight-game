@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v13.14';
+const VERSION = 'v13.15';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -2466,6 +2466,17 @@ function simpleCombatMove(u, dt, moveSpeed, atkSpd) {
       if (d<=u.range && o.hp < o.maxHp*0.35 && o.hp < lastHitHp) { lastHitHp=o.hp; bestT=o; bestD=0; }
     });
   }
+  // v13.15 小兵/普通单位索敌：进入敌方防御塔射程即锁定打塔（有塔打塔，不白冲塔送死）
+  if (!u.isHero && !bestT) {
+    let nearT = null, nTd = Infinity;
+    game.towers.forEach(t => {
+      if (t.side===u.side||!t.alive) return;
+      const d = Math.hypot(t.x-u.x, t.y-u.y);
+      const eff = d - (t.range||0);
+      if (eff < nTd) { nTd = eff; nearT = t; }
+    });
+    if (nearT && nTd <= u.range + 30) { bestT = nearT; bestD = 0; }
+  }
   if (!bestT) {
     game.units.forEach(o => {
       if (o.side===u.side||o.hp<=0||o.st.iceBlock>0) return;
@@ -3054,6 +3065,8 @@ function updateUnits(game, dt) {
 function update(dt) {
   if (duelAnim && !duelAnim.done) updateDuel(dt);
   if (game.gameOver) return;
+  // v13.15 修复：未点"开始对战"前不推进任何战斗(prepTime/出兵/时间)，杜绝"不点也自动开始"
+  if (!game.started) return;
 
   // AI决策：只有开始后才运行
   if (game.started) {
@@ -4328,7 +4341,8 @@ function render() {
   });
 
   // v12.10: 小地图圆角边框 + 半透明视口填充
-  const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+  // v13.15: 小地图尺寸加倍(480×288)，渲染用canvas坐标(游戏区顶部在HUD_H之下)，触控用游戏区坐标mmY=0，两处已对齐
+  const mmW = 480, mmH = 288, mmX = 8, mmY = HUD_H;
   const mmScaleX = mmW / WORLD_W, mmScaleY = mmH / WORLD_H;
   ctx.save();
   rr(ctx, mmX, mmY, mmW, mmH, 8);
@@ -4984,7 +4998,7 @@ canvas.addEventListener('click', e => {
   if (dragMoved || mmDragging) { dragMoved = false; mmDragging = false; return; }
 
   // 小地图点击跳转（覆盖层菜单打开时不响应，避免拦截选兵按钮）
-  const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
   if (!codexOpen && !game.altarPickMenu && cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
@@ -5474,7 +5488,7 @@ canvas.addEventListener('mousedown', e => {
     }
   }
   // 小地图点击/拖拽（左上角）
-  const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
   if (cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     mmDragging = true;
     const wx = (cx - mmX) / mmW * WORLD_W;
@@ -5522,7 +5536,7 @@ canvas.addEventListener('mousemove', e => {
   if (mmDragging) {
     const pos = toCanvasXY(e.clientX, e.clientY);
     let cx = pos.cx, cy = pos.cy; if(cy>=HUD_H)cy-=HUD_H;
-    const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+    const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
     viewX = Math.max(0, Math.min(WORLD_W - VIEW_W/zoom, wx - (VIEW_W/zoom)/2));
@@ -5601,7 +5615,7 @@ canvas.addEventListener('touchstart', e => {
     return;
   }
   // 3) 小地图（左上角）触摸：启动滑动跟随
-  const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+  const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
   if (cx >= mmX && cx <= mmX+mmW && cy >= mmY && cy <= mmY+mmH) {
     e.preventDefault();
     mmDragging = true;
@@ -5649,7 +5663,7 @@ canvas.addEventListener('touchmove', e => {
   }
   // 小地图滑动跟随（左上角）
   if (mmDragging) {
-    const mmW = 240, mmH = 144, mmX = 8, mmY = 8;
+    const mmW = 480, mmH = 288, mmX = 8, mmY = 0;
     const wx = (cx - mmX) / mmW * WORLD_W;
     const wy = (cy - mmY) / mmH * WORLD_H;
     viewX = Math.max(0, Math.min(WORLD_W - VIEW_W/zoom, wx - (VIEW_W/zoom)/2));
