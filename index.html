@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v13.16';
+const VERSION = 'v13.17';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -1298,9 +1298,12 @@ function doAttack(att, tgt, def) {
       const tgtName = UNIT_TYPES[tgt.type] ? UNIT_TYPES[tgt.type].name : (tgt.name||'单位');
       pushCombatLog(`💫${attName} 击晕 ${tgtName}1秒！`);
     }
-    // 攻城车：10%概率击退主要目标
+    // 攻城车：10%概率击退主要目标（v13.17改为平滑冲量位移，而非瞬移）
     if (att.knockback>0 && Math.random()<att.knockback) {
-      tgt.x += att.dir * 25;
+      tgt._kbV = att.dir * 520; // 初始冲量速度（世界单位/秒）
+      tgt._kbFriction = 5;      // 摩擦衰减
+      tgt._hitFlash = 0.14;     // 击退伴随受击闪白
+      spawnHitSparks(tgt.x, tgt.y, '#FFE082', 6);
       const attName = UNIT_TYPES[att.type] ? UNIT_TYPES[att.type].name : (att.name||'单位');
       const tgtName = UNIT_TYPES[tgt.type] ? UNIT_TYPES[tgt.type].name : (tgt.name||'单位');
       pushCombatLog(`💨${attName} 击退了 ${tgtName}！`);
@@ -1626,9 +1629,20 @@ function applyDmg(att, tgt, dmg, def) {
     }
     tgt.hp -= fd;
     // v12.10: 单位受击伤害数字 + 命中火花
+    // v13.17: 受击闪白 + 暴击震屏（打击感）
     if (fd > 0.5 && tgt.x !== undefined && tgt.y !== undefined) {
+      tgt._hitFlash = 0.12; // 受击闪白
       addDamageNum(tgt.x, tgt.y - 30, fd, att._isCrit, false, att.side==='my'?'#FFD54F':'#FF8A80');
-      if (att.atkType === 'melee') spawnHitSparks(tgt.x, tgt.y, '#FFE082', 3);
+      if (att._isCrit) {
+        // 暴击：更强火花 + 轻微震屏
+        spawnHitSparks(tgt.x, tgt.y, '#FFD700', 10);
+        spawnHitSparks(tgt.x, tgt.y, '#FFFFFF', 6);
+        addShake(2.5, 0.12);
+      } else if (att.atkType === 'melee') {
+        spawnHitSparks(tgt.x, tgt.y, '#FFE082', 3);
+      } else if (att.atkType === 'magic') {
+        spawnHitSparks(tgt.x, tgt.y, '#CE93D8', 3);
+      }
     }
     // 普通攻击日志（仅单位对单位，1v1显示用）
     if (tgt.type && att.type && fd > 0) {
@@ -2720,6 +2734,14 @@ function updateUnits(game, dt) {
     if (u.atkBuffT && u.atkBuffT>0) u.atkBuffT-=dt;
     if (u.atkSpdBuffT && u.atkSpdBuffT>0) u.atkSpdBuffT-=dt;
     if (u.shieldT && u.shieldT>0) { u.shieldT-=dt; if (u.shieldT<=0) u.shield=0; }
+    // v13.17: 击退冲量位移（平滑衰减，非瞬移）+ 受击闪白计时
+    if (u._kbV) {
+      u.x += u._kbV * dt;
+      const f = Math.max(0, 1 - (u._kbFriction||5) * dt);
+      u._kbV *= f;
+      if (Math.abs(u._kbV) < 15) u._kbV = 0;
+    }
+    if (u._hitFlash && u._hitFlash > 0) u._hitFlash -= dt;
     // 特斯拉电圈：身边50范围每秒20伤害（经过护甲计算，每秒打印一次日志）
     if (u.electricField>0) {
       u._efTimer = (u._efTimer||0) + dt;
@@ -3833,6 +3855,48 @@ function render() {
       ctx.lineWidth=3;
       ctx.beginPath(); ctx.arc(u.x,u.y,s*3+9,0,Math.PI*2); ctx.stroke();
     }
+  });
+
+  // v13.17: 受击闪白（统一独立循环叠加在所有单位之上，立绘+几何都覆盖）
+  game.units.forEach(u => {
+    if (u.hp<=0 || !(u._hitFlash>0)) return;
+    const def = UNIT_TYPES[u.type] || { size:12 };
+    const k = Math.min(1, u._hitFlash / 0.12);
+    const cy = u.y - def.size*3*0.5;
+    const fs = def.size*3*2.6;
+    ctx.save();
+    ctx.globalAlpha = 0.55*k;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath(); ctx.arc(u.x, cy, fs/2, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 0.30*k;
+    ctx.beginPath(); ctx.arc(u.x, cy, fs/2*1.5, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+
+  // v13.17: 近战挥砍刀光（攻击时在身前一划月牙，随攻击相位生灭）
+  game.units.forEach(u => {
+    if (u.hp<=0 || u.animState!=='attack') return;
+    const def = UNIT_TYPES[u.type] || {};
+    if (def.atkType!=='melee' && def.atkType!=='normal') return;
+    const p = Math.max(0, Math.min(1, (u._animT||0)/0.25));
+    // 刀光只在攻击前段出现
+    if (p<0.15 || p>0.85) return;
+    const a = Math.sin((p-0.15)/(0.7)*Math.PI); // 0→1→0 生灭
+    const dir = u.side==='my' ? 1 : -1;
+    const reach = def.size*3*2.2;
+    const baseY = u.y - def.size*3*0.4;
+    const sweep = 0.9 + 0.35*Math.sin(game.time*20); // 快速摆动
+    ctx.save();
+    ctx.translate(u.x + dir*def.size*3*0.6, baseY);
+    ctx.strokeStyle = 'rgba(255,255,220,0.85)';
+    ctx.lineWidth = 3.5;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = '#FFF3B0'; ctx.shadowBlur = 12;
+    ctx.globalAlpha = a;
+    ctx.beginPath();
+    ctx.arc(-dir*reach, 0, reach, Math.PI/2 - sweep, Math.PI/2 + sweep*0.6, false);
+    ctx.stroke();
+    ctx.restore();
   });
 
   // 玩家操控指令标记
