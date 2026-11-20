@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.17';
+const VERSION = 'v14.18';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -620,7 +620,7 @@ function initGame() {
   // 每边10个塔，攻击力降至17（原50的1/3）
   // v14.8: 塔血 3000 → 1200。原血量下小兵对塔只有 4 DPS，破一座塔需要 8 波兵，
   // 这是"前期 120 秒双方零塔损、比赛打成 900 秒僵持"的直接原因。
-  const TOWER_HP = 2200;
+  const TOWER_HP = 3000;   // v14.18 复原：v14.8.1 曾降到 2200，塔太脆导致全队无脑前压、英雄不回兵线补刀
   const tRange = 600; // 200×3
   const tAtk = 17; // 降低至1/3，避免英雄对塔完全没战斗力
   // 我方塔：[x, y] 绝对坐标（×3）
@@ -1777,7 +1777,7 @@ const AI_PARAMS = {
   // 补刀
   lastHitRangeMul: 7,        // 补刀搜索范围 = 自身射程×N
   lastHitSiegePct: 0.65,     // 攻城类补刀放宽血线
-  lastHitNormalPct: 0.55,
+  lastHitNormalPct: 0.75,   // v14.18 放宽：0.55→0.75，更多兵进补刀池（清兵=稳定收入）
   lastHitScoreBase: 80,      // 补刀行为基础分（提高刷兵优先级）
   // 集火/追击
   focusHeroRangeMul: 2,      // 集火搜索范围 = 射程×N
@@ -1797,6 +1797,7 @@ const AI_PARAMS = {
   // 推塔
   pushTowerMinions: 3,
   pushTowerMaxHeroes: 2,   // v14.17 同时推塔的英雄上限，其余留线补刀
+  pushMinionCrowdRange: 1200, // v14.18 这个距离内有敌方小兵就不推塔（先清兵）
   pushTowerAllies: 1,
   pushTowerHpPct: 0.50,
   // 防守
@@ -1829,7 +1830,7 @@ const AI_PARAMS = {
   advPushThreshold: 5,        // 优势度≥此值 → 趁胜追击（压制英雄/推进/推塔）
   advDefendThreshold: 6,      // 劣势度≥此值 → 加强保命与防守
   advHeroKillScore: 62,       // 优势期压制/驱赶敌方英雄的行为分
-  advFarmScore: 30,           // 均势/劣势期主动压血制造残血的分
+  advFarmScore: 62,           // v14.18 清兵基础分：30→62（高于兵线附近被压到 45 的推塔分，补兵才压得住推塔）
   advTowerPushScore: 94,      // 优势期推塔加成
   // —— 回城系统（非必要不回；该回就回，战死更亏）——
   recallTime: 5,              // 回城读条秒数（安全位置读条；受击即打断→先跑远再读）
@@ -2091,8 +2092,9 @@ function behaviorScores(u, ctx) {
         // v14.14 实测：改成"只打确定致死的兵"会让英雄离开兵线，经验（按击杀点1500内平分）反而少拿 → 已回退
         s = AI_PARAMS.lastHitScoreBase + (1 - m.hp/m.maxHp)*40;
         if (predictNextHit(u,m) >= m.hp) s += 20;
-      } else if (m.hp/m.maxHp < 0.85 && (adv <= 0 || adv < AI_PARAMS.advPushThreshold)) {
-        // 贡献攻击制造残血：均势/劣势期主动压低兵线血量，为后续补刀铺路（不推线过深）
+      } else {
+        // v14.18 清兵不再受"优势期"门控：只要兵在射程内就清（原来优势期满血/七成血兵一律不打，
+        // 英雄只能去推塔，补刀机会全让给守方的英雄）
         s = AI_PARAMS.advFarmScore;
       }
       best = Math.max(best, s);
@@ -2136,6 +2138,14 @@ function behaviorScores(u, ctx) {
     // 优势门控：我方整体明显占优 → 趁胜推进/推塔（打破僵持滚雪球）
     if (adv >= AI_PARAMS.advPushThreshold && hpPct > AI_PARAMS.pushTowerHpPct) {
       s = Math.max(s, AI_PARAMS.advTowerPushScore);
+    }
+    // v14.18 补兵第一优先级：身边(1200内)有敌方小兵时不推塔
+    // 理由：破塔只有 120~200 金，一个兵 20~30 金，补三四个兵就顶一座塔，
+    //       而且清兵是随时有的稳定收入，推塔要冒风险还要离开兵线
+    if (s > 0) {
+      let nearestM = Infinity;
+      ctx.enemyMinions.forEach(e => { if (e.d < nearestM) nearestM = e.d; });
+      if (nearestM < AI_PARAMS.pushMinionCrowdRange) s = Math.min(s, 45);
     }
     // v14.17 分带轮转：最多 pushTowerMaxHeroes 名英雄同时推塔，其余留在兵线补刀
     // （原来"优势门控"让全队一起推塔，导致推塔方英雄集体离开兵线、补刀长期被守方吃掉）
