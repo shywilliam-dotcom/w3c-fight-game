@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.3';
+const VERSION = 'v14.4';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -230,6 +230,15 @@ function getRoadY(lane, x) {
     const t = (1080 - Math.sqrt(2268000 - 360*x)) / 180;
     return laneY + t*t*(1080-laneY);
   }
+}
+
+// v14.4 野区走廊：英雄可在路间野区穿行转线，兵线仍锁三路（王者式）
+const WILD_BANDS = [{x0:480, x1:1620}, {x0:1960, x1:3680}];
+function inWildBand(x) { return WILD_BANDS.some(b => x >= b.x0 && x <= b.x1); }
+function nearestLaneByY(y) {
+  let b = 0, md = Infinity;
+  for (let i = 0; i < 3; i++) { const d = Math.abs(LANE_Y[i] - y); if (d < md) { md = d; b = i; } }
+  return b;
 }
 
 // 兵营槽位（所有坐标×3）
@@ -379,6 +388,10 @@ function createAltar(x, y, lane, side) {
 // armorType: unarmored(无甲) / light(轻甲) / medium(中甲) / heavy(重甲) / fort(城甲)
 // atkType: normal / pierce / magic / siege / chaos(混乱=无视一切)
 const ATK_MUL = {
+  // v14.4: 补 melee 行——此前 UNIT_TYPES 里近战 atkType='melee'，ATK_MUL 没有该键，
+  // 导致所有近战单位相克倍率恒为 1.0（相克表对近战完全失效）。
+  // 取值对齐 normal，但城甲保留 1.0（近战是推塔主力，不做攻城惩罚）
+  melee:  { unarmored:1.0, light:1.5, medium:1.0, heavy:1.0, fort:1.0 },
   normal: { unarmored:1.0, light:1.5, medium:1.0, heavy:1.0, fort:0.5 },
   pierce: { unarmored:1.5, light:0.75, medium:1.0, heavy:1.0, fort:0.35 },
   magic:  { unarmored:1.25, light:0.75, medium:1.0, heavy:2.0, fort:0.35 },
@@ -389,7 +402,7 @@ const ATK_MUL = {
 // 每个兵种：skill1 + skill2（随等级+10%/级），ult（6级大招）
 // ult: whirlwind(近战系) / piercing(弓手系) / blizzard(法师系) / barrage(攻城系)
 const UNIT_TYPES = {
-  melee:    { name:'刀盾手', armor:4, shape:'circle', size:10, hp:700, atk:10, atkSpeed:1.0, range:15, speed:70, cost:85, color:'#4CAF50', atkType:'melee', armorType:'heavy', ult:null,
+  melee:    { name:'刀盾手', armor:4, shape:'circle', size:10, hp:700, atk:10, atkSpeed:1.0, range:15, speed:70, cost:95, color:'#4CAF50', atkType:'melee', armorType:'heavy', ult:null,
     skill1:{k:'reflectPierce',v:0.20}, skill2:{k:'reflectMagic',v:10}, skill3:{k:'doubleAttack',v:0.15}, desc:'反射20%穿刺+反射魔法(CD10s)+15%攻击2次' },
   archer:   { name:'弓手', armor:2, shape:'triangle', size:9, hp:240, atk:7, atkSpeed:0.9, range:140, speed:70, cost:80, color:'#FF9800', atkType:'pierce', armorType:'light', ult:null,
     skill1:{k:'poison',v:0.20}, skill2:{k:'backJump',v:200}, desc:'20%毒箭+敌人近身时后跳200并定身目标' },
@@ -407,19 +420,19 @@ const UNIT_TYPES = {
     skill1:{k:'dodge',v:0.15}, skill2:{k:'charge',v:200}, desc:'15%闪避+瞬影步冲锋CD5s | 大招躲闪后无敌2秒+周围120范围100%伤害CD25s（后期强）' },
 
   // 弓手升级（大招=穿透箭）
-  musketeer:{ name:'火枪手', armor:3, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.9, range:150, speed:70, cost:120, color:'#B8860B', atkType:'pierce', armorType:'medium', ult:'pierceShot',
+  musketeer:{ name:'火枪手', armor:3, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.9, range:150, speed:70, cost:108, color:'#B8860B', atkType:'pierce', armorType:'medium', ult:'pierceShot',
     skill1:{k:'instantKill',v:0.03}, skill2:{k:'splash',v:0.25}, desc:'3%即死(每级+0.5%)+25%溅射 | 大招穿透射击:直线400内5个单位CD35s（中期强）' },
   ranger:   { name:'游侠', armor:2, shape:'triangle', size:9, hp:220, atk:11, atkSpeed:1.0, range:220, speed:70, cost:130, color:'#228B22', atkType:'pierce', armorType:'light', ult:'arrowRain',
     skill1:{k:'poison',v:0.25}, skill2:{k:'longRange',v:1}, desc:'25%毒箭(最多叠4层)+超远射程 | 大招箭雨：150范围4波×120%伤害，CD40s（初期强）' },
-  crossbow: { name:'破甲弩手', armor:2, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.5, range:145, speed:70, cost:110, color:'#4682B4', atkType:'pierce', armorType:'light', ult:'rapidFire',
+  crossbow: { name:'破甲弩手', armor:2, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.5, range:145, speed:70, cost:95, color:'#4682B4', atkType:'pierce', armorType:'light', ult:'rapidFire',
     skill1:{k:'doubleStrike',v:0.20}, skill2:{k:'focusFire',v:0.06}, skill3:{k:'armorReduce',v:0.5}, desc:'20%连锁连击+专注射击+护甲撕裂(每次-0.5护甲最多50层)（后期强）' },
 
   // 法师升级（大招=暴风雪）
   arcane:   { name:'奥法', armor:2, shape:'diamond', size:9, hp:200, atk:18, atkSpeed:0.6, range:135, speed:65, cost:135, color:'#FF00FF', atkType:'magic', armorType:'medium', ult:'arcaneBlink',
     skill1:{k:'polymorph',v:0.10}, skill2:{k:'shieldWall',v:0.40}, skill3:{k:'summonGolem',v:15}, desc:'10%变羊+群体护盾40%血+召唤傀儡(CD15s) | 大招濒死传送回基地回20%血CD60s（初期强）' },
-  ice:      { name:'冰法', armor:0, shape:'diamond', size:10, hp:250, atk:10, atkSpeed:0.6, range:135, speed:65, cost:130, color:'#00BFFF', atkType:'magic', armorType:'unarmored', ult:'blizzardNova',
+  ice:      { name:'冰法', armor:0, shape:'diamond', size:10, hp:250, atk:10, atkSpeed:0.6, range:135, speed:65, cost:118, color:'#00BFFF', atkType:'magic', armorType:'unarmored', ult:'blizzardNova',
     skill1:{k:'shieldAlly',v:0.15}, skill2:{k:'vulnerable',v:0.33}, desc:'友方冰霜护盾减伤15%+近战攻击者减速20%攻速降20%+33%概率易伤（中期强）' },
-  fire:     { name:'暗火法', armor:0, shape:'diamond', size:9, hp:200, atk:15, atkSpeed:0.6, range:135, speed:65, cost:140, color:'#9C27B0', atkType:'magic', armorType:'unarmored', ult:'fireBlast',
+  fire:     { name:'暗火法', armor:0, shape:'diamond', size:9, hp:200, atk:15, atkSpeed:0.6, range:135, speed:65, cost:128, color:'#9C27B0', atkType:'magic', armorType:'unarmored', ult:'fireBlast',
     skill1:{k:'summonSkeleton',v:5}, skill2:{k:'burnStack',v:1}, desc:'每5秒召唤骷髅+dot叠加（后期强）' },
 
   // 攻城车升级（大招=弹幕）
@@ -2295,9 +2308,16 @@ function clampUnitPos(u) {
   const baseX = u.side==='my'?MY_BASE_X:EN_BASE_X;
   const nearBase = Math.abs(u.x-baseX)<700;
   if (!nearBase) {
-    const lc = getRoadY(u.lane,u.x);
-    if (u.y<lc-55) u.y=lc-55;
-    if (u.y>lc+55) u.y=lc+55;
+    // v14.4 野区走廊：英雄可在路间野区穿行（追敌/支援隔壁路），兵线与召唤物仍锁单路
+    if (u.isHero && inWildBand(u.x)) {
+      if (u.y < LANE_Y[0]-60) u.y = LANE_Y[0]-60;
+      if (u.y > LANE_Y[2]+60) u.y = LANE_Y[2]+60;
+      u.lane = nearestLaneByY(u.y);
+    } else {
+      const lc = getRoadY(u.lane,u.x);
+      if (u.y<lc-55) u.y=lc-55;
+      if (u.y>lc+55) u.y=lc+55;
+    }
   } else {
     if (u.y<100) u.y=100;
     if (u.y>WORLD_H-100) u.y=WORLD_H-100;
@@ -2687,14 +2707,32 @@ function aiPickTransform(altars) {
     if (unit) candidates.push({unit, base:slot.unitType});
   }));
   if (!candidates.length) return null;
-  const c = candidates[0];
+  // v14.4 战况反选：肉盾不足或存活率低 → 优先 melee 基底转圣骑士；远程缺口 → 优先 archer/mage 基底
+  const side0 = candidates[0].unit.side;
+  const aliveT0 = game.units.filter(u=>u.isHero&&u.side===side0&&u.hp>0).map(u=>u.type);
+  const tankN = aliveT0.filter(t=>['melee','barbarian','paladin','fighter'].includes(t)).length;
+  const rangedN0 = aliveT0.filter(t=>['archer','musketeer','ranger','crossbow','arcane','ice','fire'].includes(t)).length;
+  const unlockedN = altars.reduce((n,a)=>n+a.slots.filter(s=>s.unlocked).length,0);
+  const aliveRatio = unlockedN>0 ? aliveT0.length/unlockedN : 1;
+  const needTank = (tankN < 2) || (aliveRatio < 0.55);
+  let chosen = candidates[0], bestScore = -Infinity;
+  for (const cd of candidates) {
+    const sc = cd.base==='melee'   ? (needTank ? 3 : 1)
+             : cd.base==='archer'  ? (rangedN0 < 2 ? 2 : 0.5)
+             : cd.base==='mage'    ? (rangedN0 < 3 ? 1.8 : 0.4)
+             : 1.2;
+    if (sc > bestScore) { bestScore = sc; chosen = cd; }
+  }
+  const c = chosen;
   const teamTypes = game.units.filter(u=>u.isHero&&u.side===c.unit.side).map(u=>u.type);
   const has = t => teamTypes.includes(t);
   // 重构B攻城保底：buildingDamage攻城英雄<2时优先把cannon转为siege/rocket
   const siegeCount = teamTypes.filter(t=>['siege','rocket'].includes(t)).length;
   let key;
   if (c.base==='cannon' && siegeCount<2) key = 'siege';
-  else if (c.base==='melee') key = has('paladin') ? (has('barbarian')?'fighter':'barbarian') : 'paladin';
+  else if (c.base==='melee') key = needTank
+      ? (has('paladin') ? 'barbarian' : 'paladin')   // v14.4: 缺肉盾时先补第二个肉盾，而不是转脆皮刺客
+      : (has('paladin') ? (has('barbarian')?'fighter':'barbarian') : 'paladin');
   else if (c.base==='archer') key = has('ranger') ? (has('crossbow')?'musketeer':'crossbow') : 'ranger';
   else if (c.base==='mage') key = has('ice') ? (has('fire')?'arcane':'fire') : 'ice';
   else key = has('tesla') ? (has('siege')?'rocket':'siege') : 'tesla';
@@ -5394,6 +5432,35 @@ function buildTerrainTexture(themeName) {
     hi.addColorStop(1, 'rgba(120,205,150,0)');
     g.fillStyle = hi;
     g.beginPath(); g.arc(cx, cy, 170, 0, Math.PI * 2); g.fill();
+  });
+
+  // ---- 2.5 v14.4 野区走廊（英雄可穿行的路间小径，视觉提示"三路可互通"）----
+  WILD_ZONES.forEach(z => {
+    const mid = z.x + z.w * 0.5;
+    const lg2 = g.createLinearGradient(mid - 120, 0, mid + 120, 0);
+    lg2.addColorStop(0.00, 'rgba(168,140,100,0)');
+    lg2.addColorStop(0.24, 'rgba(178,148,106,0.26)');
+    lg2.addColorStop(0.50, 'rgba(188,158,114,0.40)');
+    lg2.addColorStop(0.76, 'rgba(178,148,106,0.26)');
+    lg2.addColorStop(1.00, 'rgba(168,140,100,0)');
+    g.fillStyle = lg2;
+    g.fillRect(mid - 120, z.y - 40, 240, z.h + 80);
+    // 路缘：两侧细碎浅色石粒，把"这条路是通的"读出来
+    for (let i = 0; i < 26; i++) {
+      const py = z.y - 30 + (z.h + 60) * (i / 25);
+      [-1, 1].forEach(sgn => {
+        g.fillStyle = 'rgba(228,208,170,0.16)';
+        g.beginPath();
+        g.ellipse(mid + sgn * (86 + rnd() * 22), py + (rnd() - 0.5) * 12, 7 + rnd() * 6, 4 + rnd() * 4, rnd() * 3.14, 0, Math.PI * 2);
+        g.fill();
+      });
+    }
+    // 踏痕脚印感：沿走廊纵向排布的小亮点
+    for (let i = 0; i < 7; i++) {
+      const py = z.y - 20 + (z.h + 40) * (i / 6);
+      g.fillStyle = 'rgba(226,202,160,0.075)';
+      g.beginPath(); g.ellipse(mid + (rnd() - 0.5) * 90, py, 26, 13, rnd() * 3.14, 0, Math.PI * 2); g.fill();
+    }
   });
 
   // ---- 3. 地图边界岩壁（四周环绕，避免"画布露边"的廉价感）----
