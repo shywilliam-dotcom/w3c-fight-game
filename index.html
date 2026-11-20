@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.38';
+const VERSION = 'v14.39';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -692,6 +692,10 @@ function aiDecide(side, dt) {
   const targetHeroes = Math.min(t < AI_PARAMS.earlyPhaseEnd ? AI_PARAMS.earlyTargetHeroes : MAX_HERO_LIMIT, heroSlotsLimit(key));
   if (unlockedCount < targetHeroes && game.aiBuildCD[key] <= 0) {
     const laneNeed = pressureLane(side);
+    // v14.39 买不起就别 pick：原来每帧都先算一次选型（会消耗 Math.random），
+    // 双方调用次数不同 → 全局随机流错位（暴击/闪避时序也受影响）
+    const _cheapest = Math.min(...['melee','archer','mage','cannon'].map(k => summonCost(k, key)));
+    if (gold - _cheapest < reserve && unlockedCount >= 2) return;
     const pick = aiPickBasicType(aliveTypes, side, laneNeed);
     const cost = summonCost(pick, key);
     // 保留至少 reserve 的复活费；最初期先保证开局
@@ -1898,10 +1902,15 @@ function heroUsesUtilityAI(u) {
 function isMeleeUnit(u) { return u.range <= 40; }
 function isSiegeUnit(u) { return ['cannon','rocket','tesla','siege'].includes(u.type); }
 // v14.13 全局观：识别敌方核心（发育最好那个），对它施加压制而不是平均对待
+function _aiSnapOf(side) {
+  const sn = game._aiSnap;
+  if (sn && Array.isArray(sn[side])) return sn[side];
+  return game.units;
+}
 function enemyCarrySet(side) {
   const foe = side === 'my' ? 'enemy' : 'my';
   let best = null, bestV = -1;
-  for (const u of game.units) {
+  for (const u of _aiSnapOf(foe)) {
     if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
     const v = (u.level || 1) * 3 + (u.kills || 0);
     if (v > bestV) { bestV = v; best = u; }
@@ -2316,7 +2325,7 @@ function enemyArmorMix(side) {
   let n = 0;
   const carry = enemyCarrySet(side);
   const cw = COUNTER_P.carryWeight || 1;
-  for (const u of game.units) {
+  for (const u of _aiSnapOf(foe)) {
     if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
     const k = u.armorType || 'unarmored';
     if (!(k in mix)) continue;
@@ -2347,7 +2356,7 @@ function enemyLaneArmorMix(side, lane) {
   const foe = side === 'my' ? 'enemy' : 'my';
   const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
   let n = 0;
-  for (const u of game.units) {
+  for (const u of _aiSnapOf(foe)) {
     if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
     const l = (typeof u.lane === 'number') ? u.lane : nearestLaneByY(u.y);
     if (l !== lane) continue;
@@ -2371,7 +2380,7 @@ function pressureLane(side) {
 function allyArmorMix(side) {
   const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
   let n = 0;
-  for (const u of game.units) {
+  for (const u of _aiSnapOf(side)) {
     if (!u.isHero || u.side !== side || u.hp <= 0) continue;
     const k = u.armorType || 'unarmored';
     if (k in mix) { mix[k]++; n++; }
@@ -3600,6 +3609,8 @@ function update(dt) {
 
   // AI决策：只有开始后才运行
   if (game.started) {
+    game._aiSnap = { my: game.units.filter(u => u.isHero && u.hp > 0 && u.side === 'my'),
+                     enemy: game.units.filter(u => u.isHero && u.hp > 0 && u.side === 'enemy') };
     if (game._watchMode || game.aiControlBoth) { aiDecide('my', dt); aiDecide('enemy', dt); } // 模拟观战/双控：双方AI
     else { aiDecide('enemy', dt); } // 正常模式：只有敌方AI，己方玩家控制
   }
