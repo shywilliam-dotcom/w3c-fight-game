@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.7';
+const VERSION = 'v14.8.1';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -611,13 +611,16 @@ function initGame() {
   if (decorations.length === 0) buildDecorations();
 
   // 我方基地（1个，横跨三路，y=1080=360×3）
-  game.towers.push({ x:MY_BASE_X, y:1080, side:'my', isBase:true, hp:3000, maxHp:3000,
+  game.towers.push({ x:MY_BASE_X, y:1080, side:'my', isBase:true, hp:2600, maxHp:2600,
     atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:450, alive:true, armorType:'fort' });
   // 敌方基地
-  game.towers.push({ x:EN_BASE_X, y:1080, side:'enemy', isBase:true, hp:3000, maxHp:3000,
+  game.towers.push({ x:EN_BASE_X, y:1080, side:'enemy', isBase:true, hp:2600, maxHp:2600,
     atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:450, alive:true, armorType:'fort' });
 
   // 每边10个塔，攻击力降至17（原50的1/3）
+  // v14.8: 塔血 3000 → 1200。原血量下小兵对塔只有 4 DPS，破一座塔需要 8 波兵，
+  // 这是"前期 120 秒双方零塔损、比赛打成 900 秒僵持"的直接原因。
+  const TOWER_HP = 2200;
   const tRange = 600; // 200×3
   const tAtk = 17; // 降低至1/3，避免英雄对塔完全没战斗力
   // 我方塔：[x, y] 绝对坐标（×3）
@@ -628,13 +631,16 @@ function initGame() {
   ];
   myTowers.forEach(([tx, ty]) => {
     game.towers.push({ x:tx, y:ty, lane:0, side:'my', isBase:false,
-      hp:3000, maxHp:3000, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
+      hp:TOWER_HP, maxHp:TOWER_HP, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
   });
   // 敌方镜像
   myTowers.forEach(([tx, ty]) => {
     game.towers.push({ x:WORLD_W-tx, y:ty, lane:0, side:'enemy', isBase:false,
-      hp:3000, maxHp:3000, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
+      hp:TOWER_HP, maxHp:TOWER_HP, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
   });
+
+  // v14.8 破塔兵线强化（每破一塔 +25%，最多3层 → 超级兵）
+  game.superBuff = { my: {0:0,1:0,2:0}, enemy: {0:0,1:0,2:0} };
 
   // 初始化祭坛：每方3个，每路1个
   ALTAR_SLOTS.forEach(s => {
@@ -896,12 +902,14 @@ function spawnMinion(side, lane) {
   if (myCount >= 20) return; // 每方最多20个小兵
   // 小兵等级：每40秒+1级，属性+10%/级（对齐英雄升级节奏：模拟中位2级20s/3级51s/4级101s）
   const mLevel = Math.floor(game.time / MINION_LEVEL_INTERVAL) + 1;
-  const mMul = 1 + (mLevel - 1) * 0.1;
+  // v14.8 超级兵：该路每被破一座塔，我出兵 +15%（最多 +45%），越推越强，逼防守方必须回防
+  const superLv = (game.superBuff && game.superBuff[side] && game.superBuff[side][lane]) || 0;
+  const mMul = (1 + (mLevel - 1) * 0.1) * (1 + superLv * 0.15);
   const yOff = (Math.random()-0.5)*120;
   const u = {
     x: side==='my'?MY_BASE_X+60:EN_BASE_X-60,
     y: LANE_Y[lane]+yOff, yOff:yOff, lane:lane, side:side, type:'minion',
-    name:'小兵', dir: side==='my'?1:-1, level:mLevel,
+    name: superLv>0 ? '超级兵' : '小兵', dir: side==='my'?1:-1, level:mLevel,
     atkType:'normal', armorType:'unarmored',
     flatArmor:0, baseArmor:0,
     hp:Math.round(150*mMul), maxHp:Math.round(150*mMul), atk:Math.round(8*mMul), atkSpeed:1.0,
@@ -3397,6 +3405,22 @@ function update(dt) {
   game.towers.forEach(t => {
     if (t.alive && t.hp<=0) {
       t.alive=false;
+      // v14.8 破塔奖励（对标王者荣耀：摧毁防御塔 120金 + 团队奖励，外塔/内塔/高地递增）
+      // 同时该路兵线升级为"超级兵"（王者规则：破高地后该路出超级兵；这里按每破一塔+15%叠加，最多3层）
+      {
+        const laneOfT = nearestLaneByY(t.y);
+        const ownerSide = t.side;                 // 塔的归属方（被打掉的一方）
+        const breaker = ownerSide === 'my' ? 'enemy' : 'my';
+        if (game.superBuff && game.superBuff[breaker]) {
+          const lv = Math.min(3, game.superBuff[breaker][laneOfT] + 1);
+          game.superBuff[breaker][laneOfT] = lv;
+          // 王者金字塔式奖励：外塔 120 / 内塔 160 / 高地 200（团队共享，直接进 AI 团队金）
+          const reward = lv === 1 ? 120 : (lv === 2 ? 160 : 200);
+          if (game.aiGold && typeof game.aiGold[breaker] === 'number') game.aiGold[breaker] += reward;
+          if (DEBUG) dlog('gold', 'tower broken reward', { side: breaker, lane: laneOfT, reward: reward });
+          aiStat(breaker, 'towerKillGold', reward);
+        }
+      }
       if(t.side==='enemy') {
         game.gold+=300;
         if(DEBUG) dlog('gold', 'tower destroyed +300', {gold:game.gold});
