@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.37';
+const VERSION = 'v14.38';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -233,8 +233,9 @@ function getRoadY(lane, x) {
 }
 
 // v14.4 野区走廊：英雄可在路间野区穿行转线，兵线仍锁三路（王者式）
-// v14.37 左右镜像对称（原 [480,1620]/[1960,3680] 不对称，世界中心 2100，x→4200-x）
-const WILD_BANDS = [{x0:520, x1:2240}, {x0:2580, x1:3720}];
+// v14.38 真·左右镜像：两侧野区同宽（各 1140）且各自靠近自家基地（x→4200-x）
+// 原 [480,1620]/[1960,3680] 宽度 1140 vs 1720 不对称
+const WILD_BANDS = [{x0:480, x1:1620}, {x0:2580, x1:3720}];
 function inWildBand(x) { return WILD_BANDS.some(b => x >= b.x0 && x <= b.x1); }
 function nearestLaneByY(y) {
   let b = 0, md = Infinity;
