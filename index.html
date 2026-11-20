@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.22';
+const VERSION = 'v14.23';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -716,11 +716,9 @@ function aiDecide(side, dt) {
   // 2. 复活：按优先级（等级/转职/团战路）
   if (game.aiReviveCD[key] <= 0) {
     const victim = aiPickRevive(altars);
-    // v14.21 不能"秒买活"：必须罚站满 30% 才允许付费复活
-    // （原来 AI 只要有钱就立刻复活，等于复活时间对有钱方完全无效，时间只惩罚穷的一方）
-    const waited = (victim && victim.slot.reviveTotal)
-      ? (victim.slot.reviveTotal - victim.slot.reviveTimer) / victim.slot.reviveTotal : 1;
-    if (victim && waited >= 0.30 && gold >= victim.slot.reviveCost) {
+    // v14.23 撤掉"必须罚站 30% 才能买活"的门控：主人明确要"愿意花钱就花"。
+    // 钱花在买活上就买不了兵/升不了级，这本身就是一条经济差异，不需要额外限制
+    if (victim && gold >= victim.slot.reviveCost) {
       game.aiGold[key] -= victim.slot.reviveCost;
       spawnHero(victim.altar, victim.idx);
       game.aiReviveCD[key] = AI_PARAMS.aiReviveInterval;
@@ -1155,10 +1153,7 @@ function manualRevive(altarIdx, slotIdx) {
   const altar = game.altars[altarIdx];
   if (!altar || altar.side !== 'my') return false;
   const slot = altar.slots[slotIdx];
-  // v14.21 玩家也要罚站满 30% 才能付费复活，否则时间形同虚设
-  if (!slot || slot.state !== 'dead') return false;
-  if (slot.reviveTotal && (slot.reviveTotal - slot.reviveTimer) / slot.reviveTotal < 0.30) return false;
-  if (slot.reviveTimer > 0 && !slot.reviveTotal) return false;
+  if (!slot || slot.state !== 'dead' || slot.reviveTimer > 0) return false;
   if (game.gold < slot.reviveCost) return false;
   game.gold -= slot.reviveCost;
   if(DEBUG) dlog('revive', 'manual-revive cost=' + slot.reviveCost, {gold:game.gold});
