@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.12';
+const VERSION = 'v14.13';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -674,7 +674,8 @@ function aiDecide(side, dt) {
   // 1. 前期（0-60s）优先解锁到名额上限
   const targetHeroes = Math.min(t < AI_PARAMS.earlyPhaseEnd ? AI_PARAMS.earlyTargetHeroes : MAX_HERO_LIMIT, heroSlotsLimit(key));
   if (unlockedCount < targetHeroes && game.aiBuildCD[key] <= 0) {
-    const pick = aiPickBasicType(aliveTypes, side);
+    const laneNeed = pressureLane(side);
+    const pick = aiPickBasicType(aliveTypes, side, laneNeed);
     const cost = summonCost(pick, key);
     // 保留至少 reserve 的复活费；最初期先保证开局
     if (gold - cost >= reserve || unlockedCount < 2) {
@@ -688,7 +689,7 @@ function aiDecide(side, dt) {
         slot.slot.heroExp = 0;
         slot.slot.reviveTimer = 0;
         slot.slot.reviveCost = getReviveCost(pick, 1);
-        slot.slot.lane = assignHeroLane(key); // AI英雄自动分到最少英雄的一路
+        slot.slot.lane = (COUNTER_P.laneCounter && t >= AI_PARAMS.earlyPhaseEnd) ? laneNeed : assignHeroLane(key); // laneCounter=1 时中期优先补压力路
         spawnHero(slot.altar, slot.idx);
         game.aiBuildCD[key] = AI_PARAMS.aiBuildInterval;
         if (foeReadable) aiStat(side, 'counterPick');
@@ -1830,6 +1831,26 @@ function heroUsesUtilityAI(u) {
 // —— 工具函数 ——
 function isMeleeUnit(u) { return u.range <= 40; }
 function isSiegeUnit(u) { return ['cannon','rocket','tesla','siege'].includes(u.type); }
+// v14.13 全局观：识别敌方核心（发育最好那个），对它施加压制而不是平均对待
+function enemyCarrySet(side) {
+  const foe = side === 'my' ? 'enemy' : 'my';
+  let best = null, bestV = -1;
+  for (const u of game.units) {
+    if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
+    const v = (u.level || 1) * 3 + (u.kills || 0);
+    if (v > bestV) { bestV = v; best = u; }
+  }
+  return best;
+}
+function isEnemyCarry(h, side) {
+  if (!h || !h.isHero) return false;
+  const carry = enemyCarrySet(side);
+  if (!carry) return false;
+  if (carry !== h) return false;
+  // 只有真正拉开差距时才算核心（避免均势期误判）
+  return (carry.level || 1) >= 5;
+}
+
 function isHighThreatHero(t) { return ['mage','arcane','ice','fire','archer','musketeer','ranger','crossbow'].includes(t.type); }
 
 // 粗估自己下一击伤害（用于补刀/斩杀判断）
@@ -2043,6 +2064,7 @@ function behaviorScores(u, ctx) {
       else if (pct < AI_PARAMS.gankLowHpPct && ctx.allyHeroes.length>=AI_PARAMS.gankNeedAllies) s = 85; // 低血集火
       else if (pct < 0.18 && e.d < u.range*2.8) s = 66;                 // 近身残血单收割
       else if (isHighThreatHero(h)) s = 35;                             // 高威胁(弓/法)
+      if (isEnemyCarry(h, u.side)) s += COUNTER_P.carryBonus;           // 全局观：优先压制敌方核心
       // 优势趁胜追击：我方整体明显占优 → 压制/驱赶敌方英雄（破坏对方经济）
       if (adv >= AI_PARAMS.advPushThreshold && hpPct > 0.55 && ctx.allyHeroes.length >= ctx.enemyHeroes.length) {
         s = Math.max(s, AI_PARAMS.advHeroKillScore);
@@ -2152,10 +2174,14 @@ if (typeof window !== 'undefined' && window.__strat) Object.assign(STRAT_P, wind
 // 原 AI 只数自己阵容（meleeN/rangedN/cannonN），不看对面 → 双方阵容趋同 → 相克互相抵消 → 次次打平。
 // 这里给 AI 加"读对面护甲构成 → 挑攻型"的能力，克制分与阵容平衡分加权融合。
 const COUNTER_P = {
-  wCounter: 0.55,   // 克制分权重（0=退回纯自平衡，1=纯针对）
-  wBalance: 0.45,   // 阵容平衡分权重
+  wCounter: 0.55,   // 一阶克制：打中对面现状的权重（v14.12 验证有效，保持）
+  wBalance: 0.45,   // 阵容平衡分权重（保持 v14.12 比例）
+  wRobust: 0.0,     // 二阶博弈（预判对面反制）：30局配对实测等级差 -0.82→-1.66 (t=-2.38 显著变差)，过度保守反而拖慢发育，默认关闭；代码保留
   minReadable: 2,   // 敌方存活英雄≥N 才视为"可读阵容"，否则走原启发式
-  mulFloor: 0.5     // 克制倍率归一化下限
+  mulFloor: 0.5,    // 克制倍率归一化下限
+  laneCounter: 0,   // 按压力路画像：30局配对 Δ胜率+0.067 不显著、等级差-0.88、dpH+0.21，方向为负，默认关闭；代码保留
+  carryBonus: 0,    // 集火加分：实测 +14 不足以改变行为选择（FOCUS_HERO 仍低于 LAST_HIT/PUSH），默认关闭
+  carryWeight: 1    // 敌方核心在护甲画像里的票数：=3 实测等级差 -0.83→-1.85 (t=-2.43 显著变差)，默认 1 即关闭
 };
 if (typeof window !== 'undefined' && window.__strat) Object.assign(COUNTER_P, window.__strat);
 
@@ -2164,10 +2190,14 @@ function enemyArmorMix(side) {
   const foe = side === 'my' ? 'enemy' : 'my';
   const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
   let n = 0;
+  const carry = enemyCarrySet(side);
+  const cw = COUNTER_P.carryWeight || 1;
   for (const u of game.units) {
     if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
     const k = u.armorType || 'unarmored';
-    if (k in mix) { mix[k]++; n++; }
+    if (!(k in mix)) continue;
+    const w = (carry && u === carry) ? cw : 1;
+    mix[k] += w; n += w;
   }
   return { mix, n };
 }
@@ -2186,6 +2216,64 @@ function counterScore(atkType, mix, n) {
   if (!n) return 0.5;
   const cm = counterMul(atkType, mix, n);
   return Math.max(0.1, Math.min(1.3, (cm - COUNTER_P.mulFloor) / 1.2));
+}
+
+// 敌方某一路上英雄的护甲构成（全局观：克制要落到压力最大那一路，而不是全场平均）
+function enemyLaneArmorMix(side, lane) {
+  const foe = side === 'my' ? 'enemy' : 'my';
+  const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
+  let n = 0;
+  for (const u of game.units) {
+    if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
+    const l = (typeof u.lane === 'number') ? u.lane : nearestLaneByY(u.y);
+    if (l !== lane) continue;
+    const k = u.armorType || 'unarmored';
+    if (k in mix) { mix[k]++; n++; }
+  }
+  return { mix, n };
+}
+
+// 我方最需要补人的一路：lanePowerDiff 最低（己方劣势最重）
+function pressureLane(side) {
+  let worst = 0, worstV = Infinity;
+  for (const lane of [0, 1, 2]) {
+    const d = lanePowerDiff(side, lane);
+    if (d < worstV) { worstV = d; worst = lane; }
+  }
+  return worst;
+}
+
+// 我方护甲构成（= 对面读到的"我的弱点画像"）
+function allyArmorMix(side) {
+  const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
+  let n = 0;
+  for (const u of game.units) {
+    if (!u.isHero || u.side !== side || u.hp <= 0) continue;
+    const k = u.armorType || 'unarmored';
+    if (k in mix) { mix[k]++; n++; }
+  }
+  return { mix, n };
+}
+
+// 对面下一手最可能选的攻型：即"对我当前护甲构成收益最大"的那一种。
+// 这是二阶博弈的核心——不是猜概率，而是假设对面和我一样理性，会走最优反制。
+function enemyLikelyAtk(side) {
+  const me = allyArmorMix(side);
+  if (!me.n) return null;
+  let best = 'melee', bestV = -1;
+  for (const at of ['melee', 'pierce', 'magic', 'siege']) {
+    const v = counterMul(at, me.mix, me.n);
+    if (v > bestV) { bestV = v; best = at; }
+  }
+  return best;
+}
+
+// 我这个候选兵种"被对面下一手克得有多狠"：倍率越低越安全，返回 0~1（1=最安全）
+function robustScore(myArmor, foeAtk) {
+  if (!foeAtk) return 0.6;
+  const row = ATK_MUL[foeAtk] || ATK_MUL.normal;
+  const mul = row[myArmor] || 1.0;
+  return Math.max(0, Math.min(1, 1 - (mul - 0.5) / 1.5));
 }
 
 function lanePowerDiff(side, lane) {
@@ -2850,14 +2938,18 @@ function cheapestReviveCost(altars) {
   altars.forEach(a=>a.slots.forEach(s=>{ if(s.state==='dead'&&s.reviveCost<c) c=s.reviveCost; }));
   return c===Infinity ? 999 : c;
 }
-function aiPickBasicType(aliveTypes, side) {
+function aiPickBasicType(aliveTypes, side, lane) {
   const meleeN = aliveTypes.filter(t=>['melee','barbarian','paladin','fighter'].includes(t)).length;
   const rangedN = aliveTypes.filter(t=>['archer','mage','musketeer','ranger','crossbow','arcane','ice','fire'].includes(t)).length;
   const cannonN = aliveTypes.filter(t=>['cannon','rocket','tesla','siege'].includes(t)).length;
   if (aliveTypes.length===0) return ['melee','archer','mage','cannon'][Math.floor(Math.random()*4)];
 
   // v14.12：敌方阵容可读时，用"平衡分 + 克制分"打分，而不是纯自平衡启发式
-  const foe = side ? enemyArmorMix(side) : {mix:null, n:0};
+  let foe = side ? enemyArmorMix(side) : { mix: null, n: 0 };
+  if (side && typeof lane === 'number' && COUNTER_P.laneCounter) {
+    const lf = enemyLaneArmorMix(side, lane);
+    if (lf.n >= 1) foe = lf;   // 该路有敌人就用该路画像，克制更精准
+  }
   if (foe.n >= COUNTER_P.minReadable) {
     const bal = {
       melee:  meleeN < 2 ? 1.0 : (meleeN >= 3 ? 0.15 : 0.45),
@@ -2865,10 +2957,12 @@ function aiPickBasicType(aliveTypes, side) {
       mage:   rangedN < 2 ? 1.0 : (rangedN >= 3 ? 0.3 : 0.6),
       cannon: cannonN < 2 ? 0.85 : 0.1
     };
+    const foeNext = enemyLikelyAtk(side);
     let best = 'melee', bestS = -1;
     for (const k of ['melee','archer','mage','cannon']) {
       const cs = counterScore(UNIT_TYPES[k].atkType, foe.mix, foe.n);
-      const sc = COUNTER_P.wBalance * bal[k] + COUNTER_P.wCounter * cs;
+      const rb = robustScore(UNIT_TYPES[k].armorType, foeNext);
+      const sc = COUNTER_P.wBalance * bal[k] + COUNTER_P.wCounter * cs + COUNTER_P.wRobust * rb;
       if (sc > bestS) { bestS = sc; best = k; }
     }
     return best;
@@ -2914,16 +3008,17 @@ function aiPickTransform(altars) {
   const needTank = (tankN < 2) || (aliveRatio < 0.55);
   // v14.12：基底选择 = 阵容平衡分 + 敌方克制分（可读阵容时才计克制）
   const foeT = enemyArmorMix(side0);
+  const foeNextT = enemyLikelyAtk(side0);
   let chosen = candidates[0], bestScore = -Infinity;
   for (const cd of candidates) {
     const sc = cd.base==='melee'   ? (needTank ? 3 : 1)
              : cd.base==='archer'  ? (rangedN0 < 2 ? 2 : 0.5)
              : cd.base==='mage'    ? (rangedN0 < 3 ? 1.8 : 0.4)
              : 1.2;
-    const ct = (foeT.n >= COUNTER_P.minReadable)
-      ? COUNTER_P.wCounter * 2.2 * counterScore(UNIT_TYPES[cd.base].atkType, foeT.mix, foeT.n)
-      : 0;
-    const total = sc + ct;
+    const readable = foeT.n >= COUNTER_P.minReadable;
+    const ct = readable ? COUNTER_P.wCounter * 2.2 * counterScore(UNIT_TYPES[cd.base].atkType, foeT.mix, foeT.n) : 0;
+    const rb = readable ? COUNTER_P.wRobust * 2.2 * robustScore(UNIT_TYPES[cd.base].armorType, foeNextT) : 0;
+    const total = sc + ct + rb;
     if (total > bestScore) { bestScore = total; chosen = cd; }
   }
   const c = chosen;
