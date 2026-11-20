@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.33';
+const VERSION = 'v14.34';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -2229,9 +2229,16 @@ function behaviorScores(u, ctx) {
       if (u.lane === st.weakLane) { scores.RETREAT_BASE = Math.max(scores.RETREAT_BASE, 48); scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 15); }
       if (u.lane === st.focusLane) { scores.PUSH_TOWER += 14; scores.ADVANCE += 10; }
     } else if (st.mode === 'CONSOLIDATE') {
-      scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 18);
-      scores.ADVANCE = Math.min(scores.ADVANCE, 26);
+      // v14.34 收缩止损不再"全队放弃推塔"：那是死亡螺旋（劣势判定→全队挂机挨打→更劣势）
+      // 业界做法（LOL/DotA）：劣势方守家 + 留一路分带施压。这里 focusLane 的英雄负责分带，其余回防
       scores.DEFEND += 18;
+      if (u.lane === st.focusLane) {
+        scores.ADVANCE = Math.max(scores.ADVANCE, 30);
+        scores.PUSH_TOWER = Math.max(scores.PUSH_TOWER, 34);
+      } else {
+        scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 18);
+        scores.ADVANCE = Math.min(scores.ADVANCE, 26);
+      }
     } else if (st.mode === 'BALANCED' && u.lane === st.focusLane && st.p[st.focusLane] > 0.1) {
       scores.ADVANCE += 6;
     }
