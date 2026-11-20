@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.13';
+const VERSION = 'v14.14';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -1177,6 +1177,10 @@ function unlockAltarSlot(altarIdx, slotIdx, unitType) {
 
 // ============ 战斗 =====
 function doAttack(att, tgt, def) {
+  // v14.14：目标已死则这次攻击无效（此前没有校验，单位会对着尸体挥刀，白丢一次攻击）
+  if (!tgt) return;
+  if (tgt.hp !== undefined && tgt.hp <= 0) { if (att.side) aiStat(att.side, 'corpseHit'); return; }
+  if (tgt.alive === false) { if (att.side) aiStat(att.side, 'corpseHit'); return; }
   currentLogSide = att.side || 'neutral';
   if(DEBUG && att._atkLogThrottle===undefined) att._atkLogThrottle=0;
   if(DEBUG){ att._atkLogThrottle++; if(att._atkLogThrottle%20===0) dlog('attack', (att.name||att.type)+' -> '+(tgt.name||tgt.type||'tower'), {side:att.side}); }
@@ -2043,6 +2047,7 @@ function behaviorScores(u, ctx) {
       let s = 0;
       if (m.hp/m.maxHp <= threshold) {
         // 低血即打（刷兵+抢最后一击）；能一击必杀额外加分
+        // v14.14 实测：改成"只打确定致死的兵"会让英雄离开兵线，经验（按击杀点1500内平分）反而少拿 → 已回退
         s = AI_PARAMS.lastHitScoreBase + (1 - m.hp/m.maxHp)*40;
         if (predictNextHit(u,m) >= m.hp) s += 20;
       } else if (m.hp/m.maxHp < 0.85 && (adv <= 0 || adv < AI_PARAMS.advPushThreshold)) {
@@ -2607,6 +2612,11 @@ function ultCastWarranted(u, tgt) {
 function heroAIUpdate(u, dt, moveSpeed, atkSpd) {
   const def = UNIT_TYPES[u.type] || { color:'#fff' };
   heroAIThink(u, dt);
+  // v14.14：AI 目标已被打死 → 本帧丢掉这个目标，让 AI 重新决策（避免对尸体挥刀）
+  if (u._aiTarget && ((u._aiTarget.hp !== undefined && u._aiTarget.hp <= 0) || u._aiTarget.alive === false)) {
+    u._aiTarget = null;
+    u.currentTarget = null;
+  }
   const tgt = u._aiTarget;
   u.atkTimer -= dt;
   if (u.animState==='attack'||u.animState==='cast') {
