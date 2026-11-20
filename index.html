@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.6';
+const VERSION = 'v14.7';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -2120,10 +2120,21 @@ function aiContext(u) {
   };
 }
 
-// ===== v14.6 全局战略层 =====
-// 每 12 秒评估三路力量差，产出全局指令。目的不是"让每个英雄更聪明"，
-// 而是让劣势方能止损、把兵力集中到还能打的一路去换塔，避免开局吃亏后一路吃亏。
+// ===== v14.6/v14.7 全局战略层 =====
+// 目的不是"让每个英雄更聪明"，而是给劣势方一个反滚雪球的机制：
+// 收缩止损 → 攒一波兵力 → 集中到能打的一路换塔。
 const STRATEGY_INTERVAL = 12;
+
+// 阈值集中管理（window.__strat 可覆盖，便于参数扫描；不改代码就能调参）
+const STRAT_P = {
+  consolidate: -0.30,   // 全局劣势线
+  tradeWeak: -0.40,     // 弃守路判定
+  tradeGood: -0.15,     // 换塔目标路的最低要求
+  focus: 0.30,          // 集中兵力判定
+  hysteresis: false,    // 模式切换迟滞：实测开启会变僵（平局29%→37.5%），默认关闭
+  // v14.7.1: regroupHold/regroupNeedHero/regroupDur 曾用于"集结反打"，实测有害已停用
+};
+if (typeof window !== 'undefined' && window.__strat) Object.assign(STRAT_P, window.__strat);
 
 function lanePowerDiff(side, lane) {
   let ally = 0, foe = 0;
@@ -2146,6 +2157,18 @@ function lanePowerDiff(side, lane) {
   return (ally - foe) / Math.max(1, ally + foe) + towerDelta * 0.5;
 }
 
+// 双方英雄存活兵力（含血量权重），用于"能不能打这一波"的判定
+function heroForceStat(side) {
+  let n = 0, pw = 0, foeN = 0, foePw = 0;
+  game.units.forEach(u => {
+    if (!u.isHero || u.hp <= 0) return;
+    const d = UNIT_TYPES[u.type] || {};
+    const p = (u.maxHp || 100) * ((d.atk || 8) * (d.atkSpeed || 1)) * (u.hp / u.maxHp);
+    if (u.side === side) { n++; pw += p; } else { foeN++; foePw += p; }
+  });
+  return { n, pw: Math.round(pw), foeN, foePw: Math.round(foePw) };
+}
+
 function evalStrategy(side) {
   const p = [lanePowerDiff(side, 0), lanePowerDiff(side, 1), lanePowerDiff(side, 2)];
   let best = 0, worst = 0;
@@ -2155,9 +2178,9 @@ function evalStrategy(side) {
   }
   const avg = (p[0] + p[1] + p[2]) / 3;
   let mode = 'BALANCED';
-  if (avg < -0.30) mode = 'CONSOLIDATE';                        // 全局劣势 → 收缩止损，攒一波再打
-  else if (p[worst] < -0.40 && p[best] > -0.15) mode = 'TRADE';  // 一路崩、一路能打 → 弃坏打优（换塔）
-  else if (p[best] > 0.30) mode = 'FOCUS';                       // 一路优势 → 集中兵力击穿
+  if (avg < STRAT_P.consolidate) mode = 'CONSOLIDATE';                                        // 全局劣势 → 收缩止损
+  else if (p[worst] < STRAT_P.tradeWeak && p[best] > STRAT_P.tradeGood) mode = 'TRADE';       // 一路崩一路能打 → 弃坏打优
+  else if (p[best] > STRAT_P.focus) mode = 'FOCUS';                                            // 一路优势 → 集中击穿
   return { mode, focusLane: best, weakLane: worst, p: p.map(v => +v.toFixed(2)), t: game.time };
 }
 
@@ -2166,8 +2189,37 @@ function updateStrategy(dt) {
   if (game._strategyTimer > 0) return;
   game._strategyTimer = STRATEGY_INTERVAL;
   game.strategy = game.strategy || {};
-  game.strategy.my = evalStrategy('my');
-  game.strategy.enemy = evalStrategy('enemy');
+  for (const side of ['my', 'enemy']) {
+    const cand = evalStrategy(side);
+    const force = heroForceStat(side);
+    let cur = game.strategy[side];
+    if (!cur) {
+      cur = game.strategy[side] = {
+        mode: cand.mode, baseMode: cand.mode, focusLane: cand.focusLane,
+        weakLane: cand.weakLane, p: cand.p, t: game.time, hold: 0, regroupUntil: 0,
+      };
+      aiStat(side, 'strat_' + cand.mode);
+      continue;
+    }
+    // —— 模式切换。迟滞默认关闭：24 局实测开启后决策变钝（平局 29%→37.5%、时长 +40s）
+    if (!STRAT_P.hysteresis) {
+      if (cand.mode !== cur.baseMode) { cur.baseMode = cand.mode; cur.since = game.time; aiStat(side, 'strat_' + cand.mode); }
+    } else if (cand.mode === cur.baseMode) {
+      cur.pending = null;
+    } else if (cur.pending === cand.mode) {
+      cur.baseMode = cand.mode; cur.pending = null; cur.since = game.time; aiStat(side, 'strat_' + cand.mode);
+    } else {
+      cur.pending = cand.mode;
+    }
+    // v14.7.1: 「收缩→集结反打」(REGROUP) 实测有害（平局率 29%→50%、dpH 0.47→0.63），已移除。
+    // 只保留迟滞，让模式不被 12s 硬切来回抖。
+    cur.mode = cur.baseMode;
+    cur.focusLane = cand.focusLane;
+    cur.weakLane = cand.weakLane;
+    cur.p = cand.p;
+    cur.t = game.time;
+    cur.force = { n: force.n, foeN: force.foeN, pw: force.pw, foePw: force.foePw };
+  }
 }
 
 // 思维：打分→迟滞选行为→重定位目标
@@ -2299,7 +2351,7 @@ function applyHeroBehavior(u, dt, moveSpeed) {
       const stNow = game.strategy && game.strategy[u.side];
       if (stNow && (stNow.mode === 'FOCUS' || stNow.mode === 'TRADE')
           && u.lane !== stNow.focusLane && u.lane !== stNow.weakLane) {
-        aimLane = stNow.focusLane;
+        aimLane = stNow.focusLane;   // 走野区走廊跨路集结
       }
       gx = u.x + u.dir*spd*dt*0.6;
       gy = getRoadY(aimLane, gx);
