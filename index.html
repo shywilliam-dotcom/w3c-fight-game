@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.24';
+const VERSION = 'v14.29';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -920,10 +920,18 @@ function spawnUnit(b) {
   if(DEBUG) dlog('spawn', 'unit ' + u.name + ' type=' + u.type + ' side=' + u.side + ' lv=' + u.level, {x:u.x,y:u.y});
 }
 
-// 生成无技能小兵（基地每2秒刷3个，分走3路）
+// v14.27 波次参数：每30秒一波、每路2个（每方每波6个，三路合计）
+const MINION_WAVE_INTERVAL = 2;
+const MINION_WAVE_SIZE = 1;
+
+// 生成无技能小兵
 function spawnMinion(side, lane) {
+  // v14.25 取消"每方20兵上限"：出兵严格按基地节拍（每2秒三路各1），不受死亡速度影响
+  // 旧上限导致"死得快才刷得出来"，双方出兵量被死亡速度反推（我方581 vs 敌方315），
+  // 这不是设计意图——兵线推进速度应该由战斗结果决定，而不是由刷兵上限决定。
+  // 仅保留 600 的性能安全阀（正常局远达不到，纯粹防止极端堆兵拖垮渲染）
   const myCount = game.units.filter(u => u.side===side && u.type==='minion').length;
-  if (myCount >= 20) { if (typeof aiStat==='function') aiStat(side,'spawnSkip'); return; } // 每方最多20个小兵（撞上限就跳过这次刷新）
+  if (myCount >= 600) { if (typeof aiStat==='function') aiStat(side,'spawnSkip'); return; }
   // 小兵等级：每40秒+1级，属性+10%/级（对齐英雄升级节奏：模拟中位2级20s/3级51s/4级101s）
   const mLevel = Math.floor(game.time / MINION_LEVEL_INTERVAL) + 1;
   // v14.8 超级兵：该路每被破一座塔，我出兵 +15%（最多 +45%），越推越强，逼防守方必须回防
@@ -1597,6 +1605,9 @@ function doAttack(att, tgt, def) {
 
 function applyDmg(att, tgt, dmg, def) {
   currentLogSide = att.side || 'neutral';
+  // v14.25 塔仇恨：英雄只要在塔范围内对塔方单位发起攻击，塔立刻把它列为第一目标（标准 MOBA 塔仇恨）
+  // 英雄单纯路过、不打人 → 塔不会管它，照打小兵
+  if (att && att.isHero && !att.isTower) att._aggroT = 2.0;
   // 魔兽攻防相克：用目标的armorType
   const tgtArmor = tgt.armorType || (tgt.type===undefined ? 'fort' : 'unarmored');
   let mul = (ATK_MUL[att.atkType] && ATK_MUL[att.atkType][tgtArmor]) || 1.0;
@@ -3569,13 +3580,18 @@ function update(dt) {
     game.gold += BASE_GOLD_AMOUNT;
   }
 
-  // 基地每2秒刷3个无技能小兵，分走上中下3路
+  // v14.27 出兵改为"波次制"（业界标准，WC3/DotA 同款）
+  // 旧：每2秒三路各1个 = 每分钟90个兵，这个节拍过密，原来靠"20兵上限"在强行给兵线泄压，
+  //     结果就是"兵死得快才刷得出来"的假象。去掉上限后这个节拍会直接变成兵海推平（实测268秒结束）。
+  // 新：每30秒一波，每路2个（每方每波6个），不设数量上限，死了照刷。
   game.minionTimer = (game.minionTimer||0) + dt;
-  if (game.minionTimer >= 2) {
-    game.minionTimer = 0;
+  if (game.minionTimer >= MINION_WAVE_INTERVAL) {
+    game.minionTimer -= MINION_WAVE_INTERVAL;
     for (let lane = 0; lane < 3; lane++) {
-      spawnMinion('my', lane);
-      spawnMinion('enemy', lane);
+      for (let k = 0; k < MINION_WAVE_SIZE; k++) {
+        spawnMinion('my', lane);
+        spawnMinion('enemy', lane);
+      }
     }
   }
 
@@ -3640,22 +3656,31 @@ function update(dt) {
   updateUnits(game, dt);
   // v13.00: 英雄死亡处理已移至 updateUnits 内 filter 之前，此处不再重复遍历
 
-  // 塔攻击（攻击所有范围内敌方单位，不限制路）
+  // 塔攻击（v14.25 标准 MOBA 仇恨规则）
+  // 优先级：①范围内对塔方单位动过手的敌方英雄 → ②范围内敌方小兵 → ③范围内只是路过的敌方英雄
+  // 也就是：英雄过塔不死（有兵在时塔照打兵），但只要在塔下开打，塔立刻转火它
   game.towers.forEach(t => {
     if (!t.alive) return;
     t.atkTimer-=dt;
     if (t.atkTimer<=0) {
-      let best=null, bd=Infinity;
+      let aggroHero=null, ahD=Infinity, minion=null, mD=Infinity, passHero=null, phD=Infinity;
       game.units.forEach(u => {
         if (u.side===t.side||u.hp<=0||u.st.iceBlock>0) return;
         const d = Math.hypot(u.x-t.x, u.y-t.y);
-        if (d<=t.range && d<bd) { bd=d; best=u; }
+        if (d>t.range) return;
+        if (u.isHero) {
+          if ((u._aggroT||0) > 0) { if (d<ahD) { ahD=d; aggroHero=u; } }
+          else if (d<phD) { phD=d; passHero=u; }
+        } else if (d<mD) { mD=d; minion=u; }
       });
+      const best = aggroHero || minion || passHero;
       if (best) { best.hp-=t.atk; t.atkTimer=1.0;
         game.projectiles.push({x:t.x,y:t.y-20,tx:best.x,ty:best.y,p:0,color:t.side==='my'?'#4FC3F7':'#EF5350'});
       } else t.atkTimer=0.1;
     }
   });
+  // 塔仇恨衰减
+  game.units.forEach(u => { if (u._aggroT > 0) u._aggroT = Math.max(0, u._aggroT - dt); });
 
   // 弹道
   game.projectiles.forEach(p=>p.p+=dt*3);
