@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.16';
+const VERSION = 'v14.17';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -1796,6 +1796,7 @@ const AI_PARAMS = {
   teamFightEnemies: 3,
   // 推塔
   pushTowerMinions: 3,
+  pushTowerMaxHeroes: 2,   // v14.17 同时推塔的英雄上限，其余留线补刀
   pushTowerAllies: 1,
   pushTowerHpPct: 0.50,
   // 防守
@@ -2034,11 +2035,14 @@ function chooseTarget(u, ctx, behavior) {
   if (behavior==='PUSH_TOWER' || behavior==='ADVANCE' || behavior==='DEFEND') {
     const waveOk = ctx.allyMinions.length>=AI_PARAMS.pushTowerMinions || isSiegeUnit(u);
     if (behavior!=='DEFEND' && waveOk) {
+      // v14.17 补刀优先：射程内有"这一刀必死"的敌方小兵时，推塔不再锁塔
+      // （原来无条件 +60 锁塔，正是英雄"看着残血兵被别人补掉还继续砍塔"的直接原因）
+      const canLastHit = ctx.enemyMinions.some(e => e.d <= u.range*AI_PARAMS.lastHitRangeMul && predictNextHit(u, e.o) >= e.o.hp);
       let bestTower=null, btS=-1;
       game.towers.forEach(t => {
         if (t.side===u.side || !t.alive) return;
         let s = scoreTarget(u,t,behavior);
-        if (behavior==='PUSH_TOWER') s += 60; // 推塔行为锁塔，不被残血小兵抢目标
+        if (behavior==='PUSH_TOWER' && !canLastHit) s += 60; // 没有必杀兵时才锁塔
         if (s>btS){btS=s;bestTower=t;}
       });
       if (bestTower && btS>bestS) { best=bestTower; bestS=btS; }
@@ -2132,6 +2136,15 @@ function behaviorScores(u, ctx) {
     // 优势门控：我方整体明显占优 → 趁胜推进/推塔（打破僵持滚雪球）
     if (adv >= AI_PARAMS.advPushThreshold && hpPct > AI_PARAMS.pushTowerHpPct) {
       s = Math.max(s, AI_PARAMS.advTowerPushScore);
+    }
+    // v14.17 分带轮转：最多 pushTowerMaxHeroes 名英雄同时推塔，其余留在兵线补刀
+    // （原来"优势门控"让全队一起推塔，导致推塔方英雄集体离开兵线、补刀长期被守方吃掉）
+    if (s > 0) {
+      let pushingAllies = 0;
+      game.units.forEach(o => {
+        if (o !== u && o.isHero && o.side === u.side && o.hp > 0 && o._aiState === 'PUSH_TOWER') pushingAllies++;
+      });
+      if (pushingAllies >= AI_PARAMS.pushTowerMaxHeroes) s = Math.min(s, 40);
     }
     if (ctx.allyMinions.length >= AI_PARAMS.pushTowerMinions && hpPct < AI_PARAMS.pushTowerHpPct) s = 0; // 残血不推
     else if (s===0 && ctx.allyMinions.length >= AI_PARAMS.pushTowerMinions) {
