@@ -601,7 +601,7 @@ function initGame() {
     prepTime:3, bountyAnnounced:false, aiGold:{my:500, enemy:500}, aiBuildCD:{my:0, enemy:0}, aiReviveCD:{my:0, enemy:0},
     altars:[], autoRevive:false, heroIdCounter:0, minionTimer:0,
     heroMenuOpen:false,
-    aiStats:{my:{},enemy:{}}, aiControlBoth:false };
+    aiStats:{my:{},enemy:{}}, incomeSrc:{my:{fixed:0,kill:0,tower:0}, enemy:{fixed:0,kill:0,tower:0}}, aiControlBoth:false };
   usedNames.clear();
   // v12.10: 重置特效系统
   particles.length = 0;
@@ -657,7 +657,8 @@ function initGame() {
 function aiDecide(side, dt) {
   if (game.gameOver) return;
   const key = side==='my' ? 'my' : 'enemy';
-  game.aiGold[key] += 5 * (dt||0.1);
+  game.aiGold[key] += GOLD_BASE_PER_SEC * (dt||0.1);
+  if (game.incomeSrc) game.incomeSrc[key].fixed += GOLD_BASE_PER_SEC * (dt||0.1);
   if (game.aiBuildCD[key]>0) game.aiBuildCD[key] -= dt;
   if (game.aiReviveCD[key]>0) game.aiReviveCD[key] -= dt;
   const gold = game.aiGold[key];
@@ -729,8 +730,9 @@ function aiDecide(side, dt) {
 }
 
 // ============ 经济 =====
+let GOLD_BASE_PER_SEC = 5;  // v14.15 底薪（金/秒），澄海3C 为 0（纯击杀驱动），本作暂留 5
 function income() {
-  return 5; // 固定5金/秒
+  return GOLD_BASE_PER_SEC;
 }
 
 // 重新应用单位技能（转职时用）
@@ -1710,7 +1712,9 @@ function applyDmg(att, tgt, dmg, def) {
         const tgtCost = tgt.type==='minion' ? (20 * (1 + (tgt.level||1-1)*0.1)) : UNIT_TYPES[tgt.type].cost;
         const reward = Math.round(tgtCost * goldRate);
         // 金币进击杀者所属阵营的钱包（此前无论谁击杀都进玩家 game.gold，等于敌方击杀也给玩家送钱）
-        const aiWallet = (att.side === 'my') ? !!game.aiControlBoth : true;
+        // 观察模式或双 AI 控制时，我方也是 AI，钱必须进 AI 钱包（否则我方击杀的钱全进玩家口袋，AI 无经济）
+        const aiWallet = (att.side === 'my') ? (!!game.aiControlBoth || !!game._watchMode) : true;
+        if (game.incomeSrc) game.incomeSrc[att.side].kill += reward;
         if (aiWallet) { game.aiGold[att.side] = (game.aiGold[att.side]||0) + reward; }
         else { game.gold += reward; }
         if(DEBUG) dlog('gold', 'kill reward +' + reward + ' by ' + att.name + ' on ' + (tgt.name||tgt.type), {gold:game.gold});
@@ -3620,6 +3624,7 @@ function update(dt) {
           // 王者金字塔式奖励：外塔 120 / 内塔 160 / 高地 200（团队共享，直接进 AI 团队金）
           const reward = lv === 1 ? 120 : (lv === 2 ? 160 : 200);
           if (game.aiGold && typeof game.aiGold[breaker] === 'number') game.aiGold[breaker] += reward;
+          if (game.incomeSrc) game.incomeSrc[breaker].tower += reward;
           // v14.9 塔残骸减速（对标王者：塔被摧毁后对附近小兵减速 5 秒，防一波推穿）
           // 王者分档 外塔25%/内塔50%/高地75%，本作沿用全局统一的 50% 减速档（st.slow 效果为移速×0.5）
           let slowedN = 0;
