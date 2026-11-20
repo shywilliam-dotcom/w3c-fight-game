@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.23';
+const VERSION = 'v14.24';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -923,7 +923,7 @@ function spawnUnit(b) {
 // 生成无技能小兵（基地每2秒刷3个，分走3路）
 function spawnMinion(side, lane) {
   const myCount = game.units.filter(u => u.side===side && u.type==='minion').length;
-  if (myCount >= 20) return; // 每方最多20个小兵
+  if (myCount >= 20) { if (typeof aiStat==='function') aiStat(side,'spawnSkip'); return; } // 每方最多20个小兵（撞上限就跳过这次刷新）
   // 小兵等级：每40秒+1级，属性+10%/级（对齐英雄升级节奏：模拟中位2级20s/3级51s/4级101s）
   const mLevel = Math.floor(game.time / MINION_LEVEL_INTERVAL) + 1;
   // v14.8 超级兵：该路每被破一座塔，我出兵 +15%（最多 +45%），越推越强，逼防守方必须回防
@@ -2184,6 +2184,17 @@ function behaviorScores(u, ctx) {
     let s = 0;
     if (baseThreat>=2) s = 65;                 // 敌人压到基地前才回防
     else if (ownHalf && ctx.enemyHeroes.length > ctx.allyHeroes.length+1) s = 30;
+    // v14.24 我方塔前兵线堆积 → 回防清线（原来 DEFEND 只看"基地方圆800"，堆在塔前的兵线根本没人管）
+    // 这是补刀经济差的直接源头：敌方兵堆在我方塔前，敌方英雄在旁边慢慢补，我方英雄全在前场推塔
+    let towerCrowd = 0;
+    game.towers.forEach(t => {
+      if (t.side !== u.side || !t.alive) return;
+      game.units.forEach(o => {
+        if (o.side !== u.side && o.type === 'minion' && o.hp > 0
+            && Math.hypot(o.x - t.x, o.y - t.y) < t.range * 1.8) towerCrowd++;
+      });
+    });
+    if (towerCrowd >= 3) s = Math.max(s, 96);  // 高于推塔 90~95，先清自家塔前的兵
     scores.DEFEND = s;
   }
   // 7. ADVANCE 默认
@@ -2561,8 +2572,9 @@ function applyHeroBehavior(u, dt, moveSpeed) {
         gx = u.x - dirTo*30;
         spd = moveSpeed * AI_PARAMS.towerDiveBackSpeedMul;
       }
-      // DEFEND：依托己方塔，不过度前压
-      if (beh==='DEFEND') gx = u.x + dirTo*20;
+      // DEFEND：v14.24 回防时正常朝目标走（原来只挪 20 像素，等于站着不动，压根清不掉兵）
+      // 有塔威胁时下面的塔安全规则仍会拦；这里只放开"回防途中的移动"
+      if (beh==='DEFEND' && towerThreatAt(u, gx, gy) <= 0) gx = u.x + dirTo*Math.min(u.range*0.8, Math.abs(gx-u.x));
     } else {
       // 无目标：跟随兵线缓慢推进
       // v14.6 战略调兵：非焦点/非弃守路的英雄在 FOCUS/TRADE 下朝焦点路移动（走野区走廊）
