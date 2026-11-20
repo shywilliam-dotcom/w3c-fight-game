@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.20';
+const VERSION = 'v14.22';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -360,10 +360,17 @@ function getReviveCost(unitType, level) {
   if (!def) return 50;
   return Math.round(def.cost * 0.3 * (1 + level * 0.1));
 }
-// 复活时间 = 8 + 等级×3 秒（v14.20：原 5+2×等级 太短，Lv1 只罚站 7 秒、Lv5 才 15 秒，
-// 花钱立即复活几乎没有价值；现在 Lv1=11s / Lv5=23s / Lv10=38s，花小钱省半分钟才有意义）
+// 复活时间（v14.21 改为按"局内时间"涨，对齐王者荣耀口径）
+// 王者官方：初始 8s → 4分钟 20s → 20分钟 46s → 35分钟后封顶 60s，且与等级无关
+// 本作一局 600~700s（约为王者节奏的 1/1.8），映射为：开局 8s，600 秒封顶 24s
+// 为什么不再按等级：8+3Lv 那版全场都是 23s 罚站，实测胜率只有 0.083（12局赢1局）；
+// 时间驱动的好处是前期几乎不罚站、越到后期代价越重，这才是王者的曲线形状
 function getReviveTime(level) {
-  return 6 + level * 2.5;   // v14.20 折中：8+3Lv 实测 12局只赢1局（胜率0.083），改为 6+2.5Lv（Lv1=8.5s Lv5=18.5s Lv10=31s）
+  // v14.22 结论：王者式"纯按局内时间、与等级无关"的曲线在本作不适用（实测 8→18s 胜率 0.167、
+  // 8→24s 胜率 0.083，都低于按等级的 0.333）。原因是王者双方等级基本同步，罚站对两边一样；
+  // 而本作等级差长期 -3.9，只有"按等级罚站"才能惩罚强者（敌方 Lv8 罚 26s、我方 Lv4 罚 16s），
+  // 给劣势方喘息窗口。所以保留按等级，但已把整体时长比原版拉长 25%
+  return 6 + level * 2.5;
 }
 
 // 创建祭坛
@@ -709,7 +716,11 @@ function aiDecide(side, dt) {
   // 2. 复活：按优先级（等级/转职/团战路）
   if (game.aiReviveCD[key] <= 0) {
     const victim = aiPickRevive(altars);
-    if (victim && gold >= victim.slot.reviveCost) {
+    // v14.21 不能"秒买活"：必须罚站满 30% 才允许付费复活
+    // （原来 AI 只要有钱就立刻复活，等于复活时间对有钱方完全无效，时间只惩罚穷的一方）
+    const waited = (victim && victim.slot.reviveTotal)
+      ? (victim.slot.reviveTotal - victim.slot.reviveTimer) / victim.slot.reviveTotal : 1;
+    if (victim && waited >= 0.30 && gold >= victim.slot.reviveCost) {
       game.aiGold[key] -= victim.slot.reviveCost;
       spawnHero(victim.altar, victim.idx);
       game.aiReviveCD[key] = AI_PARAMS.aiReviveInterval;
@@ -1109,6 +1120,7 @@ function onHeroDeath(hero) {
   slot.heroExp = hero.exp;
   slot.heroName = hero.name;
   slot.reviveCost = getReviveCost(hero.type, hero.level);
+  slot.reviveTotal = getReviveTime(hero.level);   // v14.21 记录总罚站时长，用于限制"秒买活"
   slot.reviveTimer = getReviveTime(hero.level);
   if(DEBUG) dlog('death', 'hero death ' + hero.name + ' lv=' + hero.level, {side:hero.side});
   pushCombatLog(`💀 ${hero.name} 阵亡！复活需${slot.reviveTimer.toFixed(0)}秒，费用${slot.reviveCost}金`, hero.side);
@@ -1143,7 +1155,10 @@ function manualRevive(altarIdx, slotIdx) {
   const altar = game.altars[altarIdx];
   if (!altar || altar.side !== 'my') return false;
   const slot = altar.slots[slotIdx];
-  if (!slot || slot.state !== 'dead' || slot.reviveTimer > 0) return false;
+  // v14.21 玩家也要罚站满 30% 才能付费复活，否则时间形同虚设
+  if (!slot || slot.state !== 'dead') return false;
+  if (slot.reviveTotal && (slot.reviveTotal - slot.reviveTimer) / slot.reviveTotal < 0.30) return false;
+  if (slot.reviveTimer > 0 && !slot.reviveTotal) return false;
   if (game.gold < slot.reviveCost) return false;
   game.gold -= slot.reviveCost;
   if(DEBUG) dlog('revive', 'manual-revive cost=' + slot.reviveCost, {gold:game.gold});
