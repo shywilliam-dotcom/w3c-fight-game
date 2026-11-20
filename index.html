@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.15';
+const VERSION = 'v14.16';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -601,7 +601,7 @@ function initGame() {
     prepTime:3, bountyAnnounced:false, aiGold:{my:500, enemy:500}, aiBuildCD:{my:0, enemy:0}, aiReviveCD:{my:0, enemy:0},
     altars:[], autoRevive:false, heroIdCounter:0, minionTimer:0,
     heroMenuOpen:false,
-    aiStats:{my:{},enemy:{}}, incomeSrc:{my:{fixed:0,kill:0,tower:0}, enemy:{fixed:0,kill:0,tower:0}}, aiControlBoth:false };
+    aiStats:{my:{},enemy:{}}, incomeSrc:{my:{fixed:0,kill:0,tower:0}, enemy:{fixed:0,kill:0,tower:0}}, aiGoldBaseT:{my:0,enemy:0}, baseGoldT:0, aiControlBoth:false };
   usedNames.clear();
   // v12.10: 重置特效系统
   particles.length = 0;
@@ -657,8 +657,14 @@ function initGame() {
 function aiDecide(side, dt) {
   if (game.gameOver) return;
   const key = side==='my' ? 'my' : 'enemy';
-  game.aiGold[key] += GOLD_BASE_PER_SEC * (dt||0.1);
-  if (game.incomeSrc) game.incomeSrc[key].fixed += GOLD_BASE_PER_SEC * (dt||0.1);
+  // v14.16 底薪改为每 10 秒 10 金
+  game.aiGoldBaseT = game.aiGoldBaseT || { my: 0, enemy: 0 };
+  game.aiGoldBaseT[key] += (dt||0.1);
+  while (game.aiGoldBaseT[key] >= BASE_GOLD_INTERVAL) {
+    game.aiGoldBaseT[key] -= BASE_GOLD_INTERVAL;
+    game.aiGold[key] += BASE_GOLD_AMOUNT;
+    if (game.incomeSrc) game.incomeSrc[key].fixed += BASE_GOLD_AMOUNT;
+  }
   if (game.aiBuildCD[key]>0) game.aiBuildCD[key] -= dt;
   if (game.aiReviveCD[key]>0) game.aiReviveCD[key] -= dt;
   const gold = game.aiGold[key];
@@ -730,9 +736,11 @@ function aiDecide(side, dt) {
 }
 
 // ============ 经济 =====
-let GOLD_BASE_PER_SEC = 5;  // v14.15 底薪（金/秒），澄海3C 为 0（纯击杀驱动），本作暂留 5
+// v14.16 底薪：每 10 秒发 10 金（=1 金/秒，原来是连续 5 金/秒）
+const BASE_GOLD_INTERVAL = 10;   // 秒
+const BASE_GOLD_AMOUNT = 10;     // 金/次
 function income() {
-  return GOLD_BASE_PER_SEC;
+  return 0;   // 连续底薪已废弃，改由 BASE_GOLD_INTERVAL 定时发放
 }
 
 // 重新应用单位技能（转职时用）
@@ -3508,8 +3516,12 @@ function update(dt) {
     game.bountyAnnounced = true;
   }
 
-  game.goldAcc += income()*dt;
-  if (game.goldAcc>=1) { let g=Math.floor(game.goldAcc); game.gold+=g; game.goldAcc-=g; }
+  // v14.16 玩家底薪同步：每 10 秒 10 金（观察模式下由 aiDecide 给 AI 钱包，这里仍发玩家钱包不影响）
+  game.baseGoldT = (game.baseGoldT || 0) + dt;
+  if (game.baseGoldT >= BASE_GOLD_INTERVAL) {
+    game.baseGoldT -= BASE_GOLD_INTERVAL;
+    game.gold += BASE_GOLD_AMOUNT;
+  }
 
   // 基地每2秒刷3个无技能小兵，分走上中下3路
   game.minionTimer = (game.minionTimer||0) + dt;
