@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.34';
+const VERSION = 'v14.35';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -1062,15 +1062,11 @@ function spawnHero(altar, slotIdx) {
   });
   if (slot.unitType==='fighter') u.dodge += (lv-1)*0.05;
   game.units.push(u);
-  // 我方若当前没有受控英雄，自动受控新英雄，保证王者式操控界面可用
-  // v14.32 修复左右不对称真凶：观察模式/双AI模式下不得自动接管
-  // 原来无论什么模式，我方第一个英雄都会被自动标记 _playerControlled=true，
-  // 于是 updateUnits 里直接走 playerControlUpdate（没有手动指令 = 站着不动），
-  // 我方永远少一个ai英雄在干活 → 补刀少、不推塔、镜像局 0.167
-  if (u.side==='my' && !game.aiControlBoth && !game._watchMode) {
-    const hasCtrl = game.units.some(x => x.isHero && x.side==='my' && x._playerControlled && x.hp>0);
-    if (!hasCtrl) u._playerControlled = true;
-  }
+  // v14.35 只有玩家主动接管才算"受控"：这里不再自动接管任何英雄
+  // 理由（主人）：玩家没接管的时候英雄本来就该由 AI 处理，不该白占一个受控位。
+  // 接管途径：点击己方英雄（6273）／信息栏"手动操控"按钮 → 那一刻才置 _playerControlled=true，
+  // 交回 / 阵亡（1119）时置 false，重新由 AI 接管。
+  u._playerControlled = false;
   if(DEBUG) dlog('spawn', 'hero ' + u.name + ' type=' + u.type + ' side=' + u.side + ' lv=' + lv + ' heroId=' + heroId);
   pushCombatLog(`⚔ ${u.name}（${def.name} Lv.${lv}）登场！`, u.side);
   return u;
@@ -1880,11 +1876,13 @@ function aiStat(side, key, n) {
   d[key] = (d[key] || 0) + n;
 }
 
-// 门控：哪些英雄走效用AI。敌方永远走；我方仅在双控/观战模式走
+// 门控：哪些英雄走效用AI
+// v14.35 改为"只要不是玩家正在接管的，一律走效用AI"——
+// 原来的写法让我方未接管的英雄掉进 legacyMyHeroAuto（半自动弱AI），
+// 出现"同一套规则下我方英雄明显不如敌方聪明"的不对称
 function heroUsesUtilityAI(u) {
-  if (u.side === 'enemy') return true;
-  if (game.aiControlBoth || game._watchMode) return true;
-  return false;
+  if (u.side === 'my' && u._playerControlled) return false; // 玩家接管中：走 playerControlUpdate
+  return true;
 }
 
 // —— 工具函数 ——
