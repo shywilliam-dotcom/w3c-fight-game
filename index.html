@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.40';
+const VERSION = 'v14.41';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -5905,7 +5905,8 @@ const TERRAIN_W = Math.round(WORLD_W * TERRAIN_SCALE);
 const TERRAIN_H = Math.round(WORLD_H * TERRAIN_SCALE);
 
 // 四块野区（上下两条路之间的空地：y 570~900 / 1260~1590，中间留出中央广场）
-// v14.40 真·镜像（x→4200-x, y→2160-y）：两块各宽 1140，上下两条带关于 y=1080 对称
+// v14.40 野区「区域」真镜像（x→4200-x, y→2160-y）：两块各宽 1140，上下两条带关于 y=1080 对称
+// 说明：美术纹理/树丛不做镜像（主人口径：纹理无所谓，只要功能与路线对称）
 const WILD_ZONES = [
   { x: 480,  y: 578,  w: 1140, h: 312 },   // 上路-中路 左
   { x: 2580, y: 578,  w: 1140, h: 312 },   // 上路-中路 右（480 的镜像）
@@ -6045,17 +6046,6 @@ function buildTerrainTexture(themeName) {
   g.lineCap = 'round';
   LANE_Y.forEach(() => {});
 
-  // v14.40 纹理强制左右镜像：把左半（设备像素）镜像复制到右半，消除随机噪声带来的左右差异
-  try {
-    const Wp = Math.floor(c.width / 2);
-    g.save();
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.translate(c.width, 0);
-    g.scale(-1, 1);
-    g.drawImage(c, 0, 0, Wp, c.height, 0, 0, Wp, c.height);
-    g.restore();
-  } catch (e) {}
-
   terrainCanvas = c;
   terrainTheme = themeName;
 }
@@ -6123,11 +6113,6 @@ function buildDecorations() {
     const y = LANE_Y[lane] + (rnd() < 0.5 ? -1 : 1) * (205 + rnd() * 60);
     pushIfClear(x, y, rnd() < 0.72 ? 'bush' : 'rock', 0.55 + rnd() * 0.4);
   }
-
-  // v14.40 强制左右镜像：只保留中线左侧的装饰，再镜像复制到右侧（保证地图完全对称）
-  const left = decorations.filter(d => d.x <= WORLD_W / 2);
-  const mirrored = left.map(d => ({ x: WORLD_W - d.x, y: d.y, kind: d.kind, s: d.s }));
-  decorations = left.concat(mirrored);
 }
 // ---- 路面碎石（静态分布）----
 let lanePebbles = [];
@@ -6140,11 +6125,7 @@ function buildLanePebbles() {
     const x = 200 + rnd() * (WORLD_W - 400);
     const y = getRoadY(lane, x) + (rnd() - 0.5) * 330;
     lanePebbles.push({ x: x, y: y, r: 1.4 + rnd() * 3.2 });
-  }
-  // v14.40 碎石同样左右镜像
-  const half = lanePebbles.filter(d => d.x <= WORLD_W / 2);
-  lanePebbles = half.concat(half.map(d => ({ x: WORLD_W - d.x, y: d.y, r: d.r })));
-}
+  }}
 
 function drawDecorations() {
   for (const d of decorations) {
