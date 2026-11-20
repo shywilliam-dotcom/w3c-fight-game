@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.35';
+const VERSION = 'v14.37';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -233,7 +233,8 @@ function getRoadY(lane, x) {
 }
 
 // v14.4 野区走廊：英雄可在路间野区穿行转线，兵线仍锁三路（王者式）
-const WILD_BANDS = [{x0:480, x1:1620}, {x0:1960, x1:3680}];
+// v14.37 左右镜像对称（原 [480,1620]/[1960,3680] 不对称，世界中心 2100，x→4200-x）
+const WILD_BANDS = [{x0:520, x1:2240}, {x0:2580, x1:3720}];
 function inWildBand(x) { return WILD_BANDS.some(b => x >= b.x0 && x <= b.x1); }
 function nearestLaneByY(y) {
   let b = 0, md = Infinity;
@@ -1211,6 +1212,13 @@ function unlockAltarSlot(altarIdx, slotIdx, unitType) {
 
 // ============ 战斗 =====
 function doAttack(att, tgt, def) {
+  // v14.36 顺序无关结算：帧内所有攻击先入队，帧末按"与阵营/数组位置无关"的确定性序统一结算
+  // 目的：消除"谁排在 game.units 前面谁先出手"的先手特权（实测先手方胜率 0.917、后手方 0.2）
+  if (game && game._dmgBatch && !att._batchResolving) {
+    game._dmgBatch.push({ att, tgt, def,
+      order: ((att.x * 31 + att.y * 17 + (att.level || 1) * 7) | 0) % 997 });
+    return;
+  }
   // v14.14：目标已死则这次攻击无效（此前没有校验，单位会对着尸体挥刀，白丢一次攻击）
   if (!tgt) return;
   if (tgt.hp !== undefined && tgt.hp <= 0) { if (att.side) aiStat(att.side, 'corpseHit'); return; }
@@ -3180,8 +3188,18 @@ function aiDoTransform(u, key) {
 
 // ============ 更新 =====
 function updateUnits(game, dt) {
-  // 单位更新
-  game.units.forEach(u => {
+  // v14.36 帧内攻击批次：本帧的攻击先记下来，等所有单位都决策完再统一结算
+  game._dmgBatch = [];
+  // 单位更新（v14.37 支持固定反序实验：只改遍历顺序，不改数组本身）
+  if (game._altFixed) { game._updFrame = ((game._updFrame || 0) + 1) % 2; }
+  const _revise = game._revFixed || (game._altFixed && game._updFrame === 1);
+  let _updList = _revise ? game.units.slice().reverse() : game.units;
+  if (game._hashFixed) {
+    // 与阵营/创建顺序完全无关的确定序（键只依赖坐标，双方单位混排）
+    _updList = game.units.slice().sort((a, b) =>
+      (((a.x * 31 + a.y * 17) | 0) % 997) - (((b.x * 31 + b.y * 17) | 0) % 997));
+  }
+  _updList.forEach(u => {
     currentLogSide = u.side || 'neutral';
     if (u.st.polymorphed>0) u.st.polymorphed-=dt;
     if (u.st.burn>0) { u.st.burn-=dt; u.hp-=u.st.burnDps*dt; }
@@ -3499,6 +3517,19 @@ function updateUnits(game, dt) {
     }
     simpleCombatMove(u, dt, moveSpeed, atkSpd);
   });
+  // v14.36 统一结算本帧攻击（排序键与 side / 数组位置无关，只由坐标与等级哈希决定）
+  if (game._dmgBatch) {
+    const batch = game._dmgBatch;
+    game._dmgBatch = null;
+    batch.sort((a, b) => a.order - b.order || (a.att.y - b.att.y));
+    batch.forEach(e => {
+      if (!e.att || e.att.hp <= 0) return;
+      if (!e.tgt || (e.tgt.hp !== undefined && e.tgt.hp <= 0) || e.tgt.alive === false) return;
+      e.att._batchResolving = true;
+      doAttack(e.att, e.tgt, e.def);
+      e.att._batchResolving = false;
+    });
+  }
   // 召唤者死亡时召唤物也死亡
   game.units.forEach(u => {
     if ((u.type==='skeleton'||u.type==='golem') && u.master && u.master.hp<=0) u.hp=0;
