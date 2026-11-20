@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.41';
+const VERSION = 'v14.42';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -651,6 +651,13 @@ function initGame() {
 
   // v14.8 破塔兵线强化（每破一塔 +25%，最多3层 → 超级兵）
   game.superBuff = { my: {0:0,1:0,2:0}, enemy: {0:0,1:0,2:0} };
+  // v14.42 野区营地
+  game.camps = [];
+  CAMP_DEFS.forEach(d => {
+    const camp = { key: d.key, kind: d.kind, x: d.x, y: d.y, alive: true, timer: 0, unit: null };
+    game.camps.push(camp);
+    spawnCampMonster(camp);
+  });
 
   // 初始化祭坛：每方3个，每路1个
   ALTAR_SLOTS.forEach(s => {
@@ -1226,6 +1233,10 @@ function doAttack(att, tgt, def) {
   }
   // v14.14：目标已死则这次攻击无效（此前没有校验，单位会对着尸体挥刀，白丢一次攻击）
   if (!tgt) return;
+  // v14.42 野怪没有 UNIT_TYPES 条目 → 兜底一份 def，避免 def.color 空指针
+  if (!def || !UNIT_TYPES[att.type]) {
+    def = def || { color: (att.kind==='red' ? '#C0392B' : '#2471A3'), range: att.range || 78, name: att.name || '野怪' };
+  }
   if (tgt.hp !== undefined && tgt.hp <= 0) { if (att.side) aiStat(att.side, 'corpseHit'); return; }
   if (tgt.alive === false) { if (att.side) aiStat(att.side, 'corpseHit'); return; }
   currentLogSide = att.side || 'neutral';
@@ -1626,6 +1637,8 @@ function applyDmg(att, tgt, dmg, def) {
   // v14.25 塔仇恨：英雄只要在塔范围内对塔方单位发起攻击，塔立刻把它列为第一目标（标准 MOBA 塔仇恨）
   // 英雄单纯路过、不打人 → 塔不会管它，照打小兵
   if (att && att.isHero && !att.isTower) att._aggroT = 2.0;
+  // v14.42 野怪被打了才反击（未挑衅时守在营地，不主动咬路过的人）
+  if (tgt && tgt.isMonster) tgt._aggroT = 7;
   // 魔兽攻防相克：用目标的armorType
   const tgtArmor = tgt.armorType || (tgt.type===undefined ? 'fort' : 'unarmored');
   let mul = (ATK_MUL[att.atkType] && ATK_MUL[att.atkType][tgtArmor]) || 1.0;
@@ -1748,6 +1761,10 @@ function applyDmg(att, tgt, dmg, def) {
     }
     // 冰法被动：攻击冰法的单位攻速降低20%，持续3秒
     if (tgt.type==='ice' && att.st) att.st.slow = 3;
+    // v14.42 野怪：英雄击杀 → 金币 + 经验 + buff，营地进入重生计时
+    if (tgt.hp <= 0 && tgt.isMonster && att.isHero && !att.isMonster) {
+      jungleKill(att, tgt);
+    }
     // 只有英雄击杀单位才给金币和经验（小兵击杀不给，塔击杀不给）
     if (tgt.hp <= 0 && UNIT_TYPES[tgt.type] && att.isHero) {
       if (tgt.side === att.side) {
@@ -1996,6 +2013,7 @@ function behStatKey(b) {
     case 'PUSH_TOWER': return 'pushTower';
     case 'DEFEND': return 'defend';
     case 'ADVANCE': return 'advance';
+    case 'JUNGLE': return 'jungleBeh';
   }
   return null;
 }
@@ -2026,6 +2044,18 @@ function scoreTarget(u, tgt, behavior) {
 // 按行为选目标
 function chooseTarget(u, ctx, behavior) {
   if (behavior==='RETREAT_BASE') return null;
+  // v14.42 打野：只挑野怪，全图取最近的（不能沿用 maxSearchRange=900 的敌人池，
+  // 否则"打分说可打(2400内)"但"目标池说没有(900外)"→ 英雄站在兵线上发呆、永远打不到野）
+  if (behavior==='JUNGLE') {
+    let bestJ=null, bjD=Infinity;
+    (game.camps||[]).forEach(c => {
+      const m = c.unit;
+      if (!c.alive || !m || m.hp <= 0) return;
+      const d = Math.hypot(m.x-u.x, m.y-u.y);
+      if (d < bjD) { bjD = d; bestJ = m; }
+    });
+    return bestJ;
+  }
   // 重构B硬锁塔：PUSH_TOWER且有兵线 → 直接选被推的塔，跳过小兵/英雄竞争
   if (behavior==='PUSH_TOWER') {
     const pi = findPushingTower(u);
@@ -2259,23 +2289,61 @@ function behaviorScores(u, ctx) {
       scores.ADVANCE += 6;
     }
   }
+  // 9. JUNGLE（v14.42 野区野怪）：英雄没 buff、血够、附近有活营地时去刷
+  // 分值刻意压在补刀(80)/推塔(90)/守家(96)之下 —— 野区只吃"没事可做"的空档，
+  // 不能变成全队放假去打野（那是王者里最典型的"打野把人打没了"）
+  {
+    let j = 0;
+    const hasBuff = (u.atkBuffT > 0) || (u.atkSpdBuffT > 0);
+    if (!hasBuff && hpPct > 0.55) {
+      let camp = null, cd = Infinity;
+      (game.camps || []).forEach(c => {
+        if (!c.alive) return;
+        const d = Math.hypot(c.x - u.x, c.y - u.y);
+        if (d < cd) { cd = d; camp = c; }
+      });
+      if (camp && cd < 2400) {
+        j = 76;
+        if (cd < 900) j += 8;
+        // 真空档：附近 700 内既没有敌人也没有可补刀的己方兵 → 打野就是最优解
+        let quiet = true;
+        game.units.forEach(o => {
+          if (o === u || o.hp <= 0) return;
+          if (o.side === u.side) return;
+          if (Math.hypot(o.x - u.x, o.y - u.y) < 700) quiet = false;
+        });
+        if (quiet) j += 14;
+        // 同队已经有人在刷这片营地 → 减半，避免扎堆
+        let mates = 0;
+        game.units.forEach(o => {
+          if (o.isHero && o.side === u.side && o !== u && o.hp > 0
+              && Math.hypot(o.x - camp.x, o.y - camp.y) < 500) mates++;
+        });
+        if (mates >= 1) j *= 0.5;
+        // 己方塔前被打崩（3 个以上敌兵压塔那档）时绝不去打野
+        if ((scores.DEFEND || 0) >= 90) j = 0;
+      }
+    }
+    scores.JUNGLE = j;
+  }
   return scores;
 }
 
 // 收集英雄周边上下文
 function aiContext(u) {
-  const myEnemies=[], myAllies=[];
+  const myEnemies=[], myAllies=[], jungleTargets=[];
   game.units.forEach(o => {
     if (o.hp<=0 || o.st.iceBlock>0) return;
     const d = Math.hypot(o.x-u.x, o.y-u.y);
     if (d > AI_PARAMS.maxSearchRange) return;
+    if (o.isMonster) { jungleTargets.push({o,d}); return; }
     if (o.side!==u.side) myEnemies.push({o,d});
     else if (o!==u) myAllies.push({o,d});
   });
   let aggro = 0;
   myEnemies.forEach(e => { if (e.d < u.range*2.5) aggro++; });
   return {
-    myEnemies, myAllies, aggro,
+    myEnemies, myAllies, aggro, jungleTargets,
     enemyHeroes: myEnemies.filter(e=>e.o.isHero),
     allyHeroes: myAllies.filter(a=>a.o.isHero),
     allyMinions: myAllies.filter(a=>a.o.type==='minion'),
@@ -2511,7 +2579,7 @@ function heroAIThink(u, dt) {
   }
   if (best !== u._aiState) {
     u._aiState = best;
-    u._aiStateTimer = AI_PARAMS.behaviorHoldSec;
+    u._aiStateTimer = (best==='JUNGLE') ? Math.max(AI_PARAMS.behaviorHoldSec, 10) : AI_PARAMS.behaviorHoldSec;
     const sk = behStatKey(best);
     if (sk) aiStat(u.side, sk);
     // gank 子事件埋点
@@ -2523,7 +2591,10 @@ function heroAIThink(u, dt) {
   u._aiRetargetTimer = (u._aiRetargetTimer||0) - dt;
   if (u._aiRetargetTimer<=0 || !u._aiTarget) {
     u._aiRetargetTimer = AI_PARAMS.retargetInterval;
-    u._aiTarget = chooseTarget(u, ctx, best);
+    // v14.42 修：目标必须按"迟滞之后真正执行的行为(_aiState)"来挑，
+    // 原来用本轮新算的 best —— 两者常不一致（best=推塔、_aiState=打野），
+    // 会导致"行为是打野、目标却是塔"，人走过去被塔打死、野区一个都打不掉
+    u._aiTarget = chooseTarget(u, ctx, u._aiState || best);
   }
   u._aiCtx = ctx;
 }
@@ -3211,6 +3282,7 @@ function updateUnits(game, dt) {
   }
   _updList.forEach(u => {
     currentLogSide = u.side || 'neutral';
+    if (u.isMonster) { monsterTick(u, dt); return; }
     if (u.st.polymorphed>0) u.st.polymorphed-=dt;
     if (u.st.burn>0) { u.st.burn-=dt; u.hp-=u.st.burnDps*dt; }
     if (u.st.poison>0) {
@@ -3711,6 +3783,7 @@ function update(dt) {
   updateAltars(dt);
 
   updateUnits(game, dt);
+  updateCamps(game, dt);
   // v13.00: 英雄死亡处理已移至 updateUnits 内 filter 之前，此处不再重复遍历
 
   // 塔攻击（v14.31 单目标锁定制，按主人的口径 = 王者荣耀规则）
@@ -3725,6 +3798,7 @@ function update(dt) {
     // 当前范围内的敌方单位
     const nowIn = new Set();
     game.units.forEach(u => {
+      if (u.isMonster) return;   // v14.42 塔不管野怪
       if (u.side===t.side || u.hp<=0 || u.st.iceBlock>0) return;
       if (Math.hypot(u.x-t.x, u.y-t.y) <= t.range) nowIn.add(u);
     });
@@ -3842,6 +3916,53 @@ function endGame(win) {
 }
 
 // ============ 渲染 =====
+// v14.42 野怪渲染：红=烈焰（暖橙红），蓝=霜寒（青蓝），带营地光环与血条
+function drawMonster(u) {
+  const isRed = u.kind === 'red';
+  const body = isRed ? '#C0392B' : '#2471A3';
+  const glow = isRed ? 'rgba(255,120,60,0.55)' : 'rgba(90,200,255,0.55)';
+  const t = game.time;
+  ctx.save();
+  // 脚下阴影
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath(); ctx.ellipse(u.x, u.y+26, 26, 8, 0, 0, Math.PI*2); ctx.fill();
+  // 营地光环（呼吸）
+  const pr = 34 + Math.sin(t*2.2)*4;
+  const g = ctx.createRadialGradient(u.x, u.y, 4, u.x, u.y, pr);
+  g.addColorStop(0, glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(u.x, u.y, pr, 0, Math.PI*2); ctx.fill();
+  // 身体
+  const bob = Math.sin(t*3 + u.x*0.1)*2;
+  ctx.fillStyle = body;
+  ctx.beginPath(); ctx.ellipse(u.x, u.y+bob, 20, 16, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = isRed ? '#E67E22' : '#5DADE2';
+  ctx.beginPath(); ctx.ellipse(u.x, u.y+bob-6, 13, 9, 0, 0, Math.PI*2); ctx.fill();
+  // 角
+  ctx.strokeStyle = isRed ? '#F6DDCC' : '#D6EAF8'; ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(u.x-11, u.y+bob-12); ctx.lineTo(u.x-18, u.y+bob-24);
+  ctx.moveTo(u.x+11, u.y+bob-12); ctx.lineTo(u.x+18, u.y+bob-24);
+  ctx.stroke();
+  // 眼睛
+  ctx.fillStyle = '#FFF8E1';
+  ctx.beginPath(); ctx.arc(u.x-6, u.y+bob-6, 3.2, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(u.x+6, u.y+bob-6, 3.2, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#1B1B1B';
+  ctx.beginPath(); ctx.arc(u.x-6, u.y+bob-6, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(u.x+6, u.y+bob-6, 1.5, 0, Math.PI*2); ctx.fill();
+  // 血条
+  const w = 44, hp = u.hp/u.maxHp;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(u.x-w/2, u.y-40, w, 5);
+  ctx.fillStyle = hp > 0.5 ? '#66BB6A' : (hp > 0.25 ? '#FFB300' : '#E53935');
+  ctx.fillRect(u.x-w/2, u.y-40, w*hp, 5);
+  // 名字
+  ctx.fillStyle = '#E8F5E9'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(u.name || '野怪', u.x, u.y-46);
+  ctx.restore();
+}
+
 function render() {
   if (codexOpen) { drawCodex(); return; }
   const T = THEMES[currentTheme];
@@ -4197,6 +4318,7 @@ function render() {
 
   // 单位（视口内，去掉旧的translate/scale）
   game.units.forEach(u => {
+    if (u.isMonster) { drawMonster(u); return; }
     const def = UNIT_TYPES[u.type] || { color:'#9E9E9E', size:12, shape:'square' };
     const s = def.size;
     // v12.10: 脚下柔和阴影（椭圆渐变）
@@ -5913,6 +6035,111 @@ const WILD_ZONES = [
   { x: 480,  y: 1270, w: 1140, h: 312 },   // 中路-下路 左（578 的镜像）
   { x: 2580, y: 1270, w: 1140, h: 312 }    // 中路-下路 右
 ];
+
+// ===== v14.42 野区营地（野怪）=====
+// 位置严格镜像：1050 ↔ 3150（x→4200-x），734 ↔ 1426（y→2160-y）
+// 左上红 / 右下红 互为镜像；右上蓝 / 左下蓝 互为镜像；红蓝各两处，双方机会完全一致
+// v14.42 野区营地：左右必须同色（x→4200-x 镜像时 kind 也要一致），
+// 否则"我方近红、敌方近蓝"= 红强蓝弱就直接变成单边开小灶（v14.37 就是这么翻的车）
+const CAMP_DEFS = [
+  { key: 'A', kind: 'red',  x: 1050, y: 734  },
+  { key: 'B', kind: 'red',  x: 3150, y: 734  },
+  { key: 'C', kind: 'blue', x: 1050, y: 1426 },
+  { key: 'D', kind: 'blue', x: 3150, y: 1426 },
+];
+const CAMP_RESPAWN = 45;      // 击杀后重生秒数（王者红蓝 buff 90s，本作节奏快一倍）
+const CAMP_LEASH_R  = 380;    // 脱战回营半径
+const CAMP_GOLD     = { red: 45, blue: 40 };
+const CAMP_EXP      = 110;
+const CAMP_BUFF_T   = 25;     // buff 持续秒数
+
+function spawnCampMonster(camp) {
+  const isRed = camp.kind === 'red';
+  const hp = isRed ? 140 : 120;
+  const u = {
+    x: camp.x, y: camp.y, homeX: camp.x, homeY: camp.y,
+    lane: nearestLaneByY(camp.y), side: 'neutral', type: 'monster', isMonster: true,
+    campRef: camp, kind: camp.kind, dir: 1, level: 1,
+    name: isRed ? '烈焰野怪' : '霜寒野怪',
+    hp, maxHp: hp, atk: 26, atkSpeed: 0.8, range: 78, speed: 55, atkTimer: 0,
+    atkType: 'normal', armorType: 'light', flatArmor: 2, baseArmor: 2,
+    crit: 0, dodge: 0, st: {}, currentTarget: null, targetSwitchTimer: 0,
+    firstAttackDone: true, _aggroT: 0,
+  };
+  game.units.push(u);
+  camp.unit = u;
+  return u;
+}
+
+function monsterTick(u, dt) {
+  if (u.hp <= 0) return;
+  u._aggroT = Math.max(0, (u._aggroT || 0) - dt);
+  if (u.atkTimer > 0) u.atkTimer -= dt;
+  const homeDist = Math.hypot(u.x - u.homeX, u.y - u.homeY);
+  // 脱战或离营太远 → 回营并回血（王者/LOL 的 leash 机制）
+  if (u._aggroT <= 0 || homeDist > CAMP_LEASH_R) {
+    if (homeDist > 12) {
+      const a = Math.atan2(u.homeY - u.y, u.homeX - u.x);
+      u.x += Math.cos(a) * u.speed * dt;
+      u.y += Math.sin(a) * u.speed * dt;
+      u.animState = 'walk';
+    } else {
+      u.animState = 'idle';
+      if (u.hp < u.maxHp) u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.03 * dt);
+    }
+    return;
+  }
+  // 有仇恨：找最近的挑衅者
+  let best = null, bd = 1e9;
+  for (const o of game.units) {
+    if (o === u || o.hp <= 0 || o.isMonster) continue;
+    const d = Math.hypot(o.x - u.x, o.y - u.y);
+    if (d < 320 && d < bd) { bd = d; best = o; }
+  }
+  if (!best) { u.animState = 'idle'; return; }
+  if (bd > u.range) {
+    const a = Math.atan2(best.y - u.y, best.x - u.x);
+    u.x += Math.cos(a) * u.speed * dt;
+    u.y += Math.sin(a) * u.speed * dt;
+    u.animState = 'walk';
+  } else if (u.atkTimer <= 0) {
+    u.atkTimer = 1 / u.atkSpeed;
+    u.animState = 'attack';
+    doAttack(u, best, null);
+  }
+}
+
+function jungleKill(att, tgt) {
+  const camp = tgt.campRef;
+  const kind = tgt.kind || 'red';
+  const gold = CAMP_GOLD[kind] || 40;
+  const aiWallet = (att.side === 'my') ? (!!game.aiControlBoth || !!game._watchMode) : true;
+  if (aiWallet) game.aiGold[att.side] = (game.aiGold[att.side] || 0) + gold;
+  else game.gold += gold;
+  if (game.incomeSrc) game.incomeSrc[att.side].kill += gold;
+  giveExp(att, tgt.x, tgt.y, CAMP_EXP);
+  // 红 buff：攻击力；蓝 buff：攻速（复用现有临时增益字段）
+  if (kind === 'red') { att.atkBuff = 0.18; att.atkBuffT = CAMP_BUFF_T; }
+  else { att.atkSpdBuff = 0.20; att.atkSpdBuffT = CAMP_BUFF_T; }
+  game._jk = game._jk || {my:0, enemy:0};
+  game._jk[att.side] = (game._jk[att.side]||0) + 1;
+  aiStat(att.side, 'jungle');
+  if (camp) { camp.alive = false; camp.timer = CAMP_RESPAWN; camp.unit = null; }
+  pushCombatLog(`🌿 ${att.name || '英雄'} 击杀${tgt.name}：+${gold}金 +${CAMP_EXP}经验 +${kind === 'red' ? '烈焰之力' : '霜寒疾风'}(${CAMP_BUFF_T}s)`, att.side);
+}
+
+function updateCamps(game, dt) {
+  game.camps.forEach(c => {
+    // 兜底：野怪被非 applyDmg 路径打死（范围技能/箭雨直扣血）→ 一样进重生计时
+    if (c.alive && (!c.unit || c.unit.hp <= 0)) {
+      c.alive = false; c.timer = CAMP_RESPAWN; c.unit = null;
+      return;
+    }
+    if (c.alive) return;
+    c.timer -= dt;
+    if (c.timer <= 0) { c.alive = true; spawnCampMonster(c); }
+  });
+}
 
 function buildTerrainTexture(themeName) {
   const c = document.createElement('canvas');
