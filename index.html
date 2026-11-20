@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.4';
+const VERSION = 'v14.6';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -2079,6 +2079,23 @@ function behaviorScores(u, ctx) {
   }
   // 7. ADVANCE 默认
   scores.ADVANCE = 20;
+  // v14.6 全局战略层：把战术分数乘上战略意图（止损 / 集中 / 换塔）
+  const st = game.strategy && game.strategy[u.side];
+  if (st) {
+    if (st.mode === 'FOCUS') {
+      if (u.lane === st.focusLane) { scores.ADVANCE += 18; scores.PUSH_TOWER += 12; }
+      else { scores.RETREAT_BASE = Math.max(scores.RETREAT_BASE, 22); scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 30); }
+    } else if (st.mode === 'TRADE') {
+      if (u.lane === st.weakLane) { scores.RETREAT_BASE = Math.max(scores.RETREAT_BASE, 48); scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 15); }
+      if (u.lane === st.focusLane) { scores.PUSH_TOWER += 14; scores.ADVANCE += 10; }
+    } else if (st.mode === 'CONSOLIDATE') {
+      scores.PUSH_TOWER = Math.min(scores.PUSH_TOWER, 18);
+      scores.ADVANCE = Math.min(scores.ADVANCE, 26);
+      scores.DEFEND += 18;
+    } else if (st.mode === 'BALANCED' && u.lane === st.focusLane && st.p[st.focusLane] > 0.1) {
+      scores.ADVANCE += 6;
+    }
+  }
   return scores;
 }
 
@@ -2101,6 +2118,56 @@ function aiContext(u) {
     allyMinions: myAllies.filter(a=>a.o.type==='minion'),
     enemyMinions: myEnemies.filter(e=>e.o.type==='minion')
   };
+}
+
+// ===== v14.6 全局战略层 =====
+// 每 12 秒评估三路力量差，产出全局指令。目的不是"让每个英雄更聪明"，
+// 而是让劣势方能止损、把兵力集中到还能打的一路去换塔，避免开局吃亏后一路吃亏。
+const STRATEGY_INTERVAL = 12;
+
+function lanePowerDiff(side, lane) {
+  let ally = 0, foe = 0;
+  game.units.forEach(u => {
+    if (u.hp <= 0) return;
+    const l = (typeof u.lane === 'number') ? u.lane : nearestLaneByY(u.y);
+    if (l !== lane) return;
+    const d = UNIT_TYPES[u.type] || {};
+    const pw = (u.maxHp || 100) * ((d.atk || 8) * (d.atkSpeed || 1));
+    if (u.side === side) ally += pw; else foe += pw;
+  });
+  // 塔血量差（丢塔 = 该路被判负）；塔的 lane 字段全是 0，只能用 y 反推
+  let towerDelta = 0;
+  game.towers.forEach(t => {
+    if (!t.alive || t.isBase) return;
+    if (nearestLaneByY(t.y) !== lane) return;
+    const w = 1 - t.hp / t.maxHp;
+    towerDelta += (t.side === side ? -w : w);
+  });
+  return (ally - foe) / Math.max(1, ally + foe) + towerDelta * 0.5;
+}
+
+function evalStrategy(side) {
+  const p = [lanePowerDiff(side, 0), lanePowerDiff(side, 1), lanePowerDiff(side, 2)];
+  let best = 0, worst = 0;
+  for (let i = 1; i < 3; i++) {
+    if (p[i] > p[best]) best = i;
+    if (p[i] < p[worst]) worst = i;
+  }
+  const avg = (p[0] + p[1] + p[2]) / 3;
+  let mode = 'BALANCED';
+  if (avg < -0.30) mode = 'CONSOLIDATE';                        // 全局劣势 → 收缩止损，攒一波再打
+  else if (p[worst] < -0.40 && p[best] > -0.15) mode = 'TRADE';  // 一路崩、一路能打 → 弃坏打优（换塔）
+  else if (p[best] > 0.30) mode = 'FOCUS';                       // 一路优势 → 集中兵力击穿
+  return { mode, focusLane: best, weakLane: worst, p: p.map(v => +v.toFixed(2)), t: game.time };
+}
+
+function updateStrategy(dt) {
+  game._strategyTimer = (game._strategyTimer || 0) - dt;
+  if (game._strategyTimer > 0) return;
+  game._strategyTimer = STRATEGY_INTERVAL;
+  game.strategy = game.strategy || {};
+  game.strategy.my = evalStrategy('my');
+  game.strategy.enemy = evalStrategy('enemy');
 }
 
 // 思维：打分→迟滞选行为→重定位目标
@@ -2227,8 +2294,15 @@ function applyHeroBehavior(u, dt, moveSpeed) {
       if (beh==='DEFEND') gx = u.x + dirTo*20;
     } else {
       // 无目标：跟随兵线缓慢推进
+      // v14.6 战略调兵：非焦点/非弃守路的英雄在 FOCUS/TRADE 下朝焦点路移动（走野区走廊）
+      let aimLane = u.lane;
+      const stNow = game.strategy && game.strategy[u.side];
+      if (stNow && (stNow.mode === 'FOCUS' || stNow.mode === 'TRADE')
+          && u.lane !== stNow.focusLane && u.lane !== stNow.weakLane) {
+        aimLane = stNow.focusLane;
+      }
       gx = u.x + u.dir*spd*dt*0.6;
-      gy = getRoadY(u.lane, gx);
+      gy = getRoadY(aimLane, gx);
     }
   }
   // 重构B：塔安全规则（进/出门限迟滞：进门≥3兵，出门=兵清0且敌方英雄≥我方）
@@ -3160,6 +3234,7 @@ function update(dt) {
   }
 
   game.time += dt;
+  updateStrategy(dt); // v14.6 全局战略层：每 12s 重估三路态势
 
   // 30秒通告赏金开启
   if (!game.bountyAnnounced && game.time >= 30) {
