@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.29';
+const VERSION = 'v14.30';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -3656,24 +3656,44 @@ function update(dt) {
   updateUnits(game, dt);
   // v13.00: 英雄死亡处理已移至 updateUnits 内 filter 之前，此处不再重复遍历
 
-  // 塔攻击（v14.25 标准 MOBA 仇恨规则）
-  // 优先级：①范围内对塔方单位动过手的敌方英雄 → ②范围内敌方小兵 → ③范围内只是路过的敌方英雄
-  // 也就是：英雄过塔不死（有兵在时塔照打兵），但只要在塔下开打，塔立刻转火它
+  // 塔攻击（v14.30 进入顺序队列制，按主人的口径）
+  // 规则：
+  //   1. 塔维护一条"进入顺序队列"：谁先进入攻击范围，谁就是当前目标；打死它，就换队列里的下一个（本质上是最早进入的）
+  //   2. 队列空了就就近打最近的单位
+  //   3. 任何敌方英雄只要在范围内主动发起攻击动作（打塔、打小兵、打英雄都算）→ 塔立刻调转打它
   game.towers.forEach(t => {
     if (!t.alive) return;
     t.atkTimer-=dt;
+    if (!t._queue) t._queue = [];
+    // 先剔除已死亡/已离开范围的
+    t._queue = t._queue.filter(u => u.hp > 0 && u.st.iceBlock <= 0 && Math.hypot(u.x-t.x, u.y-t.y) <= t.range);
+    // 新进入范围的单位追加到队尾（这就是"进入顺序"）
+    game.units.forEach(u => {
+      if (u.side===t.side || u.hp<=0 || u.st.iceBlock>0) return;
+      if (Math.hypot(u.x-t.x, u.y-t.y) > t.range) return;
+      if (t._queue.indexOf(u) < 0) t._queue.push(u);
+    });
     if (t.atkTimer<=0) {
-      let aggroHero=null, ahD=Infinity, minion=null, mD=Infinity, passHero=null, phD=Infinity;
-      game.units.forEach(u => {
-        if (u.side===t.side||u.hp<=0||u.st.iceBlock>0) return;
-        const d = Math.hypot(u.x-t.x, u.y-t.y);
-        if (d>t.range) return;
-        if (u.isHero) {
-          if ((u._aggroT||0) > 0) { if (d<ahD) { ahD=d; aggroHero=u; } }
-          else if (d<phD) { phD=d; passHero=u; }
-        } else if (d<mD) { mD=d; minion=u; }
+      // 3. 仇恨英雄优先：范围内且刚动过手
+      let best = null;
+      let bestD = Infinity;
+      t._queue.forEach(u => {
+        if (u.isHero && (u._aggroT||0) > 0) {
+          const d = Math.hypot(u.x-t.x, u.y-t.y);
+          if (d < bestD) { bestD = d; best = u; }
+        }
       });
-      const best = aggroHero || minion || passHero;
+      // 1. 否则打队列里最早进入的
+      if (!best) best = t._queue[0] || null;
+      // 2. 队列空 → 就近
+      if (!best) {
+        let nd = Infinity;
+        game.units.forEach(u => {
+          if (u.side===t.side || u.hp<=0 || u.st.iceBlock>0) return;
+          const d = Math.hypot(u.x-t.x, u.y-t.y);
+          if (d <= t.range && d < nd) { nd = d; best = u; }
+        });
+      }
       if (best) { best.hp-=t.atk; t.atkTimer=1.0;
         game.projectiles.push({x:t.x,y:t.y-20,tx:best.x,ty:best.y,p:0,color:t.side==='my'?'#4FC3F7':'#EF5350'});
       } else t.atkTimer=0.1;
