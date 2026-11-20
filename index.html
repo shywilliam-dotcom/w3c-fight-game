@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.18';
+const VERSION = 'v14.20';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -360,9 +360,10 @@ function getReviveCost(unitType, level) {
   if (!def) return 50;
   return Math.round(def.cost * 0.3 * (1 + level * 0.1));
 }
-// 复活时间 = 5 + 等级×2 秒
+// 复活时间 = 8 + 等级×3 秒（v14.20：原 5+2×等级 太短，Lv1 只罚站 7 秒、Lv5 才 15 秒，
+// 花钱立即复活几乎没有价值；现在 Lv1=11s / Lv5=23s / Lv10=38s，花小钱省半分钟才有意义）
 function getReviveTime(level) {
-  return 5 + level * 2;
+  return 6 + level * 2.5;   // v14.20 折中：8+3Lv 实测 12局只赢1局（胜率0.083），改为 6+2.5Lv（Lv1=8.5s Lv5=18.5s Lv10=31s）
 }
 
 // 创建祭坛
