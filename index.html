@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.0';
+const VERSION = 'v14.1';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -2499,6 +2499,15 @@ function simpleCombatMove(u, dt, moveSpeed, atkSpd) {
       if (eff < nTd) { nTd = eff; nearT = t; }
     });
     if (nearT && nTd <= u.range + 30) { bestT = nearT; bestD = 0; }
+  }
+  // v14.1 平衡：小兵补刀——射程内有残血目标(<35%)时优先打它（澄海/LOL 式补刀，双方对称）
+  if (!u.isHero && !bestT) {
+    let lhHp = Infinity;
+    game.units.forEach(o => {
+      if (o.side===u.side || o.hp<=0 || o.st.iceBlock>0) return;
+      const d = Math.hypot(o.x-u.x, o.y-u.y);
+      if (d<=u.range && o.hp < o.maxHp*0.35 && o.hp < lhHp) { lhHp=o.hp; bestT=o; bestD=0; }
+    });
   }
   if (!bestT) {
     game.units.forEach(o => {
