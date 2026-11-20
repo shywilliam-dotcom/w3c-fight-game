@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.14';
+const VERSION = 'v14.15';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -1700,14 +1700,24 @@ function applyDmg(att, tgt, dmg, def) {
     if (tgt.type==='ice' && att.st) att.st.slow = 3;
     // 只有英雄击杀单位才给金币和经验（小兵击杀不给，塔击杀不给）
     if (tgt.hp <= 0 && UNIT_TYPES[tgt.type] && att.isHero) {
-      // 击杀小兵给50%造价金币，击杀英雄给10%造价金币
-      const goldRate = tgt.type==='minion' ? 0.50 : 0.10;
-      const tgtCost = tgt.type==='minion' ? (20 * (1 + (tgt.level||1-1)*0.1)) : UNIT_TYPES[tgt.type].cost;
-      game.gold += Math.round(tgtCost * goldRate);
-      if(DEBUG) dlog('gold', 'kill reward +' + Math.round(tgtCost*goldRate) + ' by ' + att.name + ' on ' + (tgt.name||tgt.type), {gold:game.gold});
-      // 经验：英雄等级×60，小兵等级×30（每100秒小兵升级）
-      const expGain = tgt.isHero ? (tgt.level || 1) * 60 : (tgt.level || 1) * 30;
-      giveExp(att, tgt.x, tgt.y, expGain);
+      if (tgt.side === att.side) {
+        // v14.15 反补（deny）：击杀己方单位 → 0 金币 0 经验，唯一作用是阻断对方这笔收益
+        aiStat(att.side, 'deny');
+        if(DEBUG) dlog('deny', (att.name||att.type)+' deny '+(tgt.name||tgt.type));
+      } else {
+        // 正补：基础收益 50% 造价 + 补刀奖励 50%（= 王者的"补刀额外+50%经济"，合计 75% 造价）
+        const goldRate = tgt.type==='minion' ? 0.75 : 0.10;
+        const tgtCost = tgt.type==='minion' ? (20 * (1 + (tgt.level||1-1)*0.1)) : UNIT_TYPES[tgt.type].cost;
+        const reward = Math.round(tgtCost * goldRate);
+        // 金币进击杀者所属阵营的钱包（此前无论谁击杀都进玩家 game.gold，等于敌方击杀也给玩家送钱）
+        const aiWallet = (att.side === 'my') ? !!game.aiControlBoth : true;
+        if (aiWallet) { game.aiGold[att.side] = (game.aiGold[att.side]||0) + reward; }
+        else { game.gold += reward; }
+        if(DEBUG) dlog('gold', 'kill reward +' + reward + ' by ' + att.name + ' on ' + (tgt.name||tgt.type), {gold:game.gold});
+        // 经验：英雄等级×60，小兵等级×30（每100秒小兵升级）
+        const expGain = tgt.isHero ? (tgt.level || 1) * 60 : (tgt.level || 1) * 30;
+        giveExp(att, tgt.x, tgt.y, expGain);
+      }
     }
     // 暗火法击杀后立刻召唤一个骷髅
     if (tgt.hp <= 0 && att.type==='darkfire' && att.hp>0) {
@@ -1988,7 +1998,22 @@ function chooseTarget(u, ctx, behavior) {
     }
   }
   let pool = null;
-  if (behavior==='LAST_HIT') pool = ctx.enemyMinions.map(e=>e.o);
+  if (behavior==='LAST_HIT') {
+    pool = ctx.enemyMinions.map(e=>e.o);
+    // v14.15 反补：己方小兵血量<50% 且敌方英雄在附近（对方可能补到）时才去补掉它
+    if (COUNTER_P.enableDeny) {
+      for (const e of ctx.allyMinions) {
+        const m = e.o;
+        if (m.type !== 'minion' || m.hp <= 0) continue;
+        if (m.hp / m.maxHp > COUNTER_P.denyHpPct) continue;
+        let foeNear = false;
+        for (const o of game.units) {
+          if (o.isHero && o.side !== u.side && o.hp > 0 && Math.hypot(o.x-m.x, o.y-m.y) < COUNTER_P.denyRange) { foeNear = true; break; }
+        }
+        if (foeNear) pool.push(m);
+      }
+    }
+  }
   else if (behavior==='FOCUS_HERO') pool = ctx.enemyHeroes.length ? ctx.enemyHeroes.map(e=>e.o) : ctx.myEnemies.map(e=>e.o);
   else pool = ctx.myEnemies.map(e=>e.o);
   let best=null, bestS=-1;
@@ -2186,7 +2211,10 @@ const COUNTER_P = {
   mulFloor: 0.5,    // 克制倍率归一化下限
   laneCounter: 0,   // 按压力路画像：30局配对 Δ胜率+0.067 不显著、等级差-0.88、dpH+0.21，方向为负，默认关闭；代码保留
   carryBonus: 0,    // 集火加分：实测 +14 不足以改变行为选择（FOCUS_HERO 仍低于 LAST_HIT/PUSH），默认关闭
-  carryWeight: 1    // 敌方核心在护甲画像里的票数：=3 实测等级差 -0.83→-1.85 (t=-2.43 显著变差)，默认 1 即关闭
+  carryWeight: 1,   // 敌方核心在护甲画像里的票数：=3 实测等级差 -0.83→-1.85 (t=-2.43 显著变差)，默认 1 即关闭
+  enableDeny: 1,    // 反补开关：1=允许英雄补掉自家残血兵（断对方经济）
+  denyHpPct: 0.5,   // 反补血线（DotA 同档：己方小兵 50% 以下可反补）
+  denyRange: 600    // 只有敌方英雄在这个距离内才值得反补
 };
 if (typeof window !== 'undefined' && window.__strat) Object.assign(COUNTER_P, window.__strat);
 
