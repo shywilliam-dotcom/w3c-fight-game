@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.8.1';
+const VERSION = 'v14.9';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -3417,6 +3417,16 @@ function update(dt) {
           // 王者金字塔式奖励：外塔 120 / 内塔 160 / 高地 200（团队共享，直接进 AI 团队金）
           const reward = lv === 1 ? 120 : (lv === 2 ? 160 : 200);
           if (game.aiGold && typeof game.aiGold[breaker] === 'number') game.aiGold[breaker] += reward;
+          // v14.9 塔残骸减速（对标王者：塔被摧毁后对附近小兵减速 5 秒，防一波推穿）
+          // 王者分档 外塔25%/内塔50%/高地75%，本作沿用全局统一的 50% 减速档（st.slow 效果为移速×0.5）
+          let slowedN = 0;
+          game.units.forEach(u => {
+            if (u.type !== 'minion' || u.side !== breaker || u.hp <= 0 || !u.st) return;
+            if (Math.hypot(u.x - t.x, u.y - t.y) > 700) return;
+            u.st.slow = Math.max(u.st.slow, 5);
+            slowedN++;
+          });
+          aiStat(breaker, 'towerSlowMinions', slowedN);
           if (DEBUG) dlog('gold', 'tower broken reward', { side: breaker, lane: laneOfT, reward: reward });
           aiStat(breaker, 'towerKillGold', reward);
         }
