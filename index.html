@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.11';
+const VERSION = 'v14.12';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -669,11 +669,12 @@ function aiDecide(side, dt) {
   altars.forEach(a => a.slots.forEach(s => { if (s.unlocked && s.state==='alive') aliveTypes.push(s.unitType); }));
   const unlockedCount = altars.reduce((n,a)=>n+a.slots.filter(s=>s.unlocked).length, 0);
   const reserve = cheapestReviveCost(altars) * AI_PARAMS.reserveReviveCount;
+  const foeReadable = enemyArmorMix(side).n >= COUNTER_P.minReadable;
 
   // 1. 前期（0-60s）优先解锁到名额上限
   const targetHeroes = Math.min(t < AI_PARAMS.earlyPhaseEnd ? AI_PARAMS.earlyTargetHeroes : MAX_HERO_LIMIT, heroSlotsLimit(key));
   if (unlockedCount < targetHeroes && game.aiBuildCD[key] <= 0) {
-    const pick = aiPickBasicType(aliveTypes);
+    const pick = aiPickBasicType(aliveTypes, side);
     const cost = summonCost(pick, key);
     // 保留至少 reserve 的复活费；最初期先保证开局
     if (gold - cost >= reserve || unlockedCount < 2) {
@@ -690,6 +691,7 @@ function aiDecide(side, dt) {
         slot.slot.lane = assignHeroLane(key); // AI英雄自动分到最少英雄的一路
         spawnHero(slot.altar, slot.idx);
         game.aiBuildCD[key] = AI_PARAMS.aiBuildInterval;
+        if (foeReadable) aiStat(side, 'counterPick');
         return;
       }
     }
@@ -718,6 +720,7 @@ function aiDecide(side, dt) {
         game.aiGold[key] -= cost;
         aiDoTransform(xf.unit, xf.key);
         aiStat(side, 'upgrade');
+        if (xf.countered) aiStat(side, 'counterPick');
         return;
       }
     }
@@ -2144,6 +2147,47 @@ const STRAT_P = {
 };
 if (typeof window !== 'undefined' && window.__strat) Object.assign(STRAT_P, window.__strat);
 
+// ===== v14.12 选兵克制层 =====
+// 问题：v14.11 证明战略层阈值不是胜负主导（配对不显著）。真变量在"选兵是否打中对面"。
+// 原 AI 只数自己阵容（meleeN/rangedN/cannonN），不看对面 → 双方阵容趋同 → 相克互相抵消 → 次次打平。
+// 这里给 AI 加"读对面护甲构成 → 挑攻型"的能力，克制分与阵容平衡分加权融合。
+const COUNTER_P = {
+  wCounter: 0.55,   // 克制分权重（0=退回纯自平衡，1=纯针对）
+  wBalance: 0.45,   // 阵容平衡分权重
+  minReadable: 2,   // 敌方存活英雄≥N 才视为"可读阵容"，否则走原启发式
+  mulFloor: 0.5     // 克制倍率归一化下限
+};
+if (typeof window !== 'undefined' && window.__strat) Object.assign(COUNTER_P, window.__strat);
+
+// 敌方存活英雄的护甲构成（unarmored/light/medium/heavy 计数）
+function enemyArmorMix(side) {
+  const foe = side === 'my' ? 'enemy' : 'my';
+  const mix = { unarmored: 0, light: 0, medium: 0, heavy: 0 };
+  let n = 0;
+  for (const u of game.units) {
+    if (!u.isHero || u.side !== foe || u.hp <= 0) continue;
+    const k = u.armorType || 'unarmored';
+    if (k in mix) { mix[k]++; n++; }
+  }
+  return { mix, n };
+}
+
+// 某攻击类型对敌方阵容的期望伤害倍率（按人口加权）
+function counterMul(atkType, mix, n) {
+  if (!n) return 1.0;
+  const row = ATK_MUL[atkType] || ATK_MUL.normal;
+  let sum = 0;
+  for (const k in mix) sum += mix[k] * (row[k] || 1.0);
+  return sum / n;
+}
+
+// 归一化克制分：倍率 → 0.15~1.2 区间，避免 2.0 倍时压死平衡项
+function counterScore(atkType, mix, n) {
+  if (!n) return 0.5;
+  const cm = counterMul(atkType, mix, n);
+  return Math.max(0.1, Math.min(1.3, (cm - COUNTER_P.mulFloor) / 1.2));
+}
+
 function lanePowerDiff(side, lane) {
   let ally = 0, foe = 0;
   game.units.forEach(u => {
@@ -2806,11 +2850,30 @@ function cheapestReviveCost(altars) {
   altars.forEach(a=>a.slots.forEach(s=>{ if(s.state==='dead'&&s.reviveCost<c) c=s.reviveCost; }));
   return c===Infinity ? 999 : c;
 }
-function aiPickBasicType(aliveTypes) {
+function aiPickBasicType(aliveTypes, side) {
   const meleeN = aliveTypes.filter(t=>['melee','barbarian','paladin','fighter'].includes(t)).length;
   const rangedN = aliveTypes.filter(t=>['archer','mage','musketeer','ranger','crossbow','arcane','ice','fire'].includes(t)).length;
   const cannonN = aliveTypes.filter(t=>['cannon','rocket','tesla','siege'].includes(t)).length;
   if (aliveTypes.length===0) return ['melee','archer','mage','cannon'][Math.floor(Math.random()*4)];
+
+  // v14.12：敌方阵容可读时，用"平衡分 + 克制分"打分，而不是纯自平衡启发式
+  const foe = side ? enemyArmorMix(side) : {mix:null, n:0};
+  if (foe.n >= COUNTER_P.minReadable) {
+    const bal = {
+      melee:  meleeN < 2 ? 1.0 : (meleeN >= 3 ? 0.15 : 0.45),
+      archer: rangedN < 2 ? 1.0 : (rangedN >= 3 ? 0.25 : 0.55),
+      mage:   rangedN < 2 ? 1.0 : (rangedN >= 3 ? 0.3 : 0.6),
+      cannon: cannonN < 2 ? 0.85 : 0.1
+    };
+    let best = 'melee', bestS = -1;
+    for (const k of ['melee','archer','mage','cannon']) {
+      const cs = counterScore(UNIT_TYPES[k].atkType, foe.mix, foe.n);
+      const sc = COUNTER_P.wBalance * bal[k] + COUNTER_P.wCounter * cs;
+      if (sc > bestS) { bestS = sc; best = k; }
+    }
+    return best;
+  }
+
   if (cannonN>=2) return (meleeN>=2?'archer':'melee');
   if (meleeN>=2) return 'archer';
   if (rangedN>=2) return 'melee';
@@ -2849,15 +2912,22 @@ function aiPickTransform(altars) {
   const unlockedN = altars.reduce((n,a)=>n+a.slots.filter(s=>s.unlocked).length,0);
   const aliveRatio = unlockedN>0 ? aliveT0.length/unlockedN : 1;
   const needTank = (tankN < 2) || (aliveRatio < 0.55);
+  // v14.12：基底选择 = 阵容平衡分 + 敌方克制分（可读阵容时才计克制）
+  const foeT = enemyArmorMix(side0);
   let chosen = candidates[0], bestScore = -Infinity;
   for (const cd of candidates) {
     const sc = cd.base==='melee'   ? (needTank ? 3 : 1)
              : cd.base==='archer'  ? (rangedN0 < 2 ? 2 : 0.5)
              : cd.base==='mage'    ? (rangedN0 < 3 ? 1.8 : 0.4)
              : 1.2;
-    if (sc > bestScore) { bestScore = sc; chosen = cd; }
+    const ct = (foeT.n >= COUNTER_P.minReadable)
+      ? COUNTER_P.wCounter * 2.2 * counterScore(UNIT_TYPES[cd.base].atkType, foeT.mix, foeT.n)
+      : 0;
+    const total = sc + ct;
+    if (total > bestScore) { bestScore = total; chosen = cd; }
   }
   const c = chosen;
+  c.countered = (foeT.n >= COUNTER_P.minReadable) && (counterScore(UNIT_TYPES[c.base].atkType, foeT.mix, foeT.n) >= 0.75);
   const teamTypes = game.units.filter(u=>u.isHero&&u.side===c.unit.side).map(u=>u.type);
   const has = t => teamTypes.includes(t);
   // 重构B攻城保底：buildingDamage攻城英雄<2时优先把cannon转为siege/rocket
@@ -2870,7 +2940,7 @@ function aiPickTransform(altars) {
   else if (c.base==='archer') key = has('ranger') ? (has('crossbow')?'musketeer':'crossbow') : 'ranger';
   else if (c.base==='mage') key = has('ice') ? (has('fire')?'arcane':'fire') : 'ice';
   else key = has('tesla') ? (has('siege')?'rocket':'siege') : 'tesla';
-  return {unit:c.unit, key};
+  return {unit:c.unit, key, countered:!!c.countered};
 }
 function aiDoTransform(u, key) {
   const newDef = UNIT_TYPES[key]; if (!newDef) return;
