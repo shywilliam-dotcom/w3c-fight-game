@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.42';
+const VERSION = 'v14.43';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -186,12 +186,15 @@ const HUD_H = 60; // 顶部HUD栏高度
 let CANVAS_W = 1200; const CANVAS_H = 780;
 let VIEW_W = 1200; const VIEW_H = 720; // 视口尺寸（VIEW_W 跟随 CANVAS_W）
 // ============ 大战场坐标系统 ============
-const WORLD_W = 4200, WORLD_H = 2160;
+// v14.43 地图扩容：基准设计尺寸仍是 4200×2160，GEO 是全局几何倍率
+// 只用一处改倍率就能整张地图放大（塔位/野区/营地/路宽/AI 距离都从这里派生）
+const GEO = 1.5;
+const WORLD_W = Math.round(4200 * GEO), WORLD_H = Math.round(2160 * GEO);
 const SCALE = 3;
-let zoom = 0.56;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节（默认0.56=较0.7缩小20%看更多地图）
-const ZOOM_MIN = 0.45, ZOOM_MAX = 1.2;
+let zoom = Math.round((0.56 / GEO) * 100) / 100;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节（默认0.56=较0.7缩小20%看更多地图）
+const ZOOM_MIN = Math.round((0.45 / GEO) * 100) / 100, ZOOM_MAX = 1.2; // v14.43: 视野下限随 GEO 同步放开，保证大地图仍能拉远看全景
 let zoomManual = false;    // 用户是否手动调过 zoom（避免竖屏自适应覆盖）
-let viewX = 0, viewY = 480;
+let viewX = 0, viewY = Math.round(480 * GEO);
 // 视口边界限制
 function clampView() {
   viewX = Math.max(0, Math.min(viewX, WORLD_W - VIEW_W/zoom));
@@ -212,30 +215,45 @@ function toScreenY(y) { return y - viewY; }
 function toWorldX(x) { return x + viewX; }
 function toWorldY(y) { return y + viewY; }
 
-const LANE_Y = [390, 1080, 1770]; // 三路y坐标（×3）
+const LANE_Y = [390, 1080, 1770].map(v => Math.round(v * GEO)); // 三路y坐标（×3×GEO）
 const LANE_NAMES = ['上路','中路','下路'];
-const MY_BASE_X = 150; // ×3
-const EN_BASE_X = 4050; // ×3
+const MY_BASE_X = Math.round(150 * GEO);   // ×3×GEO
+const EN_BASE_X = Math.round(4050 * GEO);  // ×3×GEO
 
 // 计算道路上任意x处的中心y坐标（处理弯道，所有坐标×3）
+// v14.43 参数化弯道：直道起止、控制点全部由 GEO 派生，地图放大后曲线形状严格等比
+const ROAD_STRAIGHT_X0 = Math.round(1140 * GEO);  // 直道起点（我方弯道终点）
+const ROAD_STRAIGHT_X1 = Math.round(3060 * GEO);  // 直道终点（敌方弯道起点）
+const ROAD_BEND_MY = Math.round(600 * GEO);       // 我方弯道控制点 x
+const ROAD_BEND_EN = Math.round(3600 * GEO);      // 敌方弯道控制点 x
+function bezierSolveX(a, b, c, x) {
+  // x(t) = a(1-t)^2 + 2b t(1-t) + c t^2，反解 t（取 [0,1] 内那支）
+  const A = c - 2*b + a, B = 2*(b - a), C = a - x;
+  const D = B*B - 4*A*C;
+  if (D <= 0) return 0;
+  const t1 = (-B + Math.sqrt(D)) / (2*A), t2 = (-B - Math.sqrt(D)) / (2*A);
+  const pick = (t1 >= 0 && t1 <= 1) ? t1 : t2;
+  return Math.max(0, Math.min(1, pick));
+}
 function getRoadY(lane, x) {
   const laneY = LANE_Y[lane];
-  if (x >= 1140 && x <= 3060) return laneY; // 直道（拉大中间空白地）
-  if (x < 1140) {
-    // 我方弯道：P0(150,1080) P1(600,laneY) P2(1140,laneY)
-    const t = (-900 + Math.sqrt(756000 + 360*x)) / 180;
-    return 1080 + t*(2*laneY-2160) + t*t*(1080-laneY);
+  const baseY = LANE_Y[1];
+  if (x >= ROAD_STRAIGHT_X0 && x <= ROAD_STRAIGHT_X1) return laneY; // 直道
+  if (x < ROAD_STRAIGHT_X0) {
+    // 我方弯道：P0(MY_BASE_X,baseY) P1(ROAD_BEND_MY,laneY) P2(ROAD_STRAIGHT_X0,laneY)
+    const t = bezierSolveX(MY_BASE_X, ROAD_BEND_MY, ROAD_STRAIGHT_X0, x);
+    return baseY + t*(2*laneY-2*baseY) + t*t*(baseY-laneY);
   } else {
-    // 敌方弯道：P0(3060,laneY) P1(3600,laneY) P2(4050,1080)
-    const t = (1080 - Math.sqrt(2268000 - 360*x)) / 180;
-    return laneY + t*t*(1080-laneY);
+    // 敌方弯道：P0(ROAD_STRAIGHT_X1,laneY) P1(ROAD_BEND_EN,laneY) P2(EN_BASE_X,baseY)
+    const t = bezierSolveX(ROAD_STRAIGHT_X1, ROAD_BEND_EN, EN_BASE_X, x);
+    return laneY + t*t*(baseY-laneY);
   }
 }
 
 // v14.4 野区走廊：英雄可在路间野区穿行转线，兵线仍锁三路（王者式）
 // v14.38 真·左右镜像：两侧野区同宽（各 1140）且各自靠近自家基地（x→4200-x）
 // 原 [480,1620]/[1960,3680] 宽度 1140 vs 1720 不对称
-const WILD_BANDS = [{x0:480, x1:1620}, {x0:2580, x1:3720}];
+const WILD_BANDS = [{x0:480, x1:1620}, {x0:2580, x1:3720}].map(b => ({x0:Math.round(b.x0*GEO), x1:Math.round(b.x1*GEO)}));
 function inWildBand(x) { return WILD_BANDS.some(b => x >= b.x0 && x <= b.x1); }
 function nearestLaneByY(y) {
   let b = 0, md = Infinity;
@@ -300,10 +318,10 @@ const EN_BARRACK_POS = [
 // ============ 祭坛系统（英雄制） ============
 // 主基地即祭坛：点击基地打开全屏选英雄界面（澄海3C式酒馆）
 const ALTAR_SLOTS = [
-  {x:MY_BASE_X, y:1080, lane:1}   // 基地=祭坛（中路坐标）
+  {x:MY_BASE_X, y:LANE_Y[1], lane:1}   // 基地=祭坛（中路坐标）
 ];
 const EN_ALTAR_POS = [
-  {x:EN_BASE_X, y:1080, lane:1}
+  {x:EN_BASE_X, y:LANE_Y[1], lane:1}
 ];
 const HEROES_PER_ALTAR = 16; // 4×4=16格（预留，实际名额上限12）
 const ALTAR_SLOT_W = 100, ALTAR_SLOT_H = 100; // 栏位尺寸（加大便于点击）
@@ -353,7 +371,7 @@ function assignHeroLane(side) {
 function expToLevel(lv) {  return 200 + (lv-1)*120 + (lv-1)*(lv-1)*20;
 }
 const MAX_HERO_LEVEL = 10;
-const EXP_SHARE_RANGE = 1500; // 经验均分范围（大战场×3后）
+const EXP_SHARE_RANGE = Math.round(1500 * GEO); // 经验均分范围（大战场×3后）
 const MINION_LEVEL_INTERVAL = 40; // 小兵每40秒升1级（对齐英雄升级中位节奏）
 
 // 复活费用 = 造价 × 30% × (1 + 等级×10%)
@@ -621,24 +639,25 @@ function initGame() {
   if (decorations.length === 0) buildDecorations();
 
   // 我方基地（1个，横跨三路，y=1080=360×3）
-  game.towers.push({ x:MY_BASE_X, y:1080, side:'my', isBase:true, hp:2600, maxHp:2600,
-    atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:450, alive:true, armorType:'fort' });
+  game.towers.push({ x:MY_BASE_X, y:LANE_Y[1], side:'my', isBase:true, hp:2600, maxHp:2600,
+    atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:Math.round(450*GEO), alive:true, armorType:'fort' });
   // 敌方基地
-  game.towers.push({ x:EN_BASE_X, y:1080, side:'enemy', isBase:true, hp:2600, maxHp:2600,
-    atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:450, alive:true, armorType:'fort' });
+  game.towers.push({ x:EN_BASE_X, y:LANE_Y[1], side:'enemy', isBase:true, hp:2600, maxHp:2600,
+    atk:150, armor:30, flatArmor:30, baseArmor:30, atkType:'chaos', atkTimer:0, range:Math.round(450*GEO), alive:true, armorType:'fort' });
 
   // 每边10个塔，攻击力降至17（原50的1/3）
   // v14.8: 塔血 3000 → 1200。原血量下小兵对塔只有 4 DPS，破一座塔需要 8 波兵，
   // 这是"前期 120 秒双方零塔损、比赛打成 900 秒僵持"的直接原因。
   const TOWER_HP = 3000;   // v14.18 复原：v14.8.1 曾降到 2200，塔太脆导致全队无脑前压、英雄不回兵线补刀
-  const tRange = 600; // 200×3
+  const tRange = Math.round(600 * GEO); // 200×3×GEO
   const tAtk = 17; // 降低至1/3，避免英雄对塔完全没战斗力
   // 我方塔：[x, y] 绝对坐标（×3）
+  // v14.43 塔位随 GEO 等比放大（原来写死坐标，地图一大就全挤在左边）
   const myTowers = [
     [570, 885], [570, 1275], [540, 393], [540, 1767],
     [960, 621], [960, 1539], [1275, 195], [1275, 885],
     [1275, 1275], [1275, 1965],
-  ];
+  ].map(([tx, ty]) => [Math.round(tx * GEO), Math.round(ty * GEO)]);
   myTowers.forEach(([tx, ty]) => {
     game.towers.push({ x:tx, y:ty, lane:0, side:'my', isBase:false,
       hp:TOWER_HP, maxHp:TOWER_HP, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
@@ -955,9 +974,9 @@ function spawnMinion(side, lane) {
   // v14.8 超级兵：该路每被破一座塔，我出兵 +15%（最多 +45%），越推越强，逼防守方必须回防
   const superLv = (game.superBuff && game.superBuff[side] && game.superBuff[side][lane]) || 0;
   const mMul = (1 + (mLevel - 1) * 0.1) * (1 + superLv * 0.15);
-  const yOff = (Math.random()-0.5)*120;
+  const yOff = (Math.random()-0.5)*120*GEO;
   const u = {
-    x: side==='my'?MY_BASE_X+60:EN_BASE_X-60,
+    x: side==='my'?MY_BASE_X+60*GEO:EN_BASE_X-60*GEO,
     y: LANE_Y[lane]+yOff, yOff:yOff, lane:lane, side:side, type:'minion',
     name: superLv>0 ? '超级兵' : '小兵', dir: side==='my'?1:-1, level:mLevel,
     atkType:'normal', armorType:'unarmored',
@@ -1830,7 +1849,7 @@ const AI_PARAMS = {
   retreatHit2Pct: 0.30,      // 被2+敌人攻击时的撤退血线
   retreatLowHeroPct: 0.15,   // 附近有敌方英雄时的硬撤退线
   retreatHealReturnPct: 0.80,// 回多少血才重返战场
-  baseRegenRange: 135,       // 基地回血圈半径
+  baseRegenRange: Math.round(135*GEO),       // 基地回血圈半径
   // 补刀
   lastHitRangeMul: 7,        // 补刀搜索范围 = 自身射程×N
   lastHitSiegePct: 0.65,     // 攻城类补刀放宽血线
@@ -1847,25 +1866,25 @@ const AI_PARAMS = {
   diveEntryMinions: 3,       // 进塔门槛
   diveExitMinions: 0,        // 出塔门槛：兵线清到这个数以下+敌方英雄≥我方才撤
   pushClearMinions: 1,        // R17：塔前有≥这个数的敌方小兵时，PUSH先清兵再锁塔
-  pushClearMargin: 300,       // R17：塔射程外再扩这个距离算"塔前"区域
+  pushClearMargin: Math.round(300*GEO),       // R17：塔射程外再扩这个距离算"塔前"区域
   // 团战
   teamFightAllies: 3,
   teamFightEnemies: 3,
   // 推塔
   pushTowerMinions: 3,
   pushTowerMaxHeroes: 2,   // v14.17 同时推塔的英雄上限，其余留线补刀
-  pushMinionCrowdRange: 1200, // v14.18 这个距离内有敌方小兵就不推塔（先清兵）
+  pushMinionCrowdRange: Math.round(1200*GEO), // v14.18 这个距离内有敌方小兵就不推塔（先清兵）
   pushTowerAllies: 1,
   pushTowerHpPct: 0.50,
   // 防守
-  defendThreatRange: 600,
+  defendThreatRange: Math.round(600*GEO),
   // 默认推进
   advanceMinionsNeeded: 3,
   // —— 目标评分权重 ——
   scoreKillable: 50, scoreHero: 30, scoreTower: 10, scoreTowerWithWave: 30,
   scoreMinion: 5, scoreLowHpMax: 40, scoreProxMax: 20, scoreBounty: 15,
   scoreSafe: 20, scoreAllyFocus: 15,
-  maxSearchRange: 900,
+  maxSearchRange: Math.round(900*GEO),
   // —— 迟滞/重定位 ——
   retargetInterval: 0.5,
   hysteresisMargin: 8,
@@ -1873,7 +1892,7 @@ const AI_PARAMS = {
   // —— 大招释放策略 ——
   ultMinCluster: 3,           // 3+敌人扎堆才放AOE大招
   ultExecuteHeroPct: 0.30,    // 敌方英雄<30%可放斩杀大招
-  ultClusterRange: 150,
+  ultClusterRange: Math.round(150*GEO),
   // —— 宏观AI ——
   earlyPhaseEnd: 60, midPhaseEnd: 180,
   earlyTargetHeroes: 7,
@@ -1893,7 +1912,7 @@ const AI_PARAMS = {
   recallTime: 5,              // 回城读条秒数（安全位置读条；受击即打断→先跑远再读）
   recallCostBase: 10,         // 回城费基础
   recallCostPerLevel: 5,      // 回城费 = base + 等级×perLevel（保命要花钱）
-  recallMinDist: 600,         // 距基地>此值才走读条回城流程；近的直接走回省钱
+  recallMinDist: Math.round(600*GEO),         // 距基地>此值才走读条回城流程；近的直接走回省钱
   recallThreatDist: 500       // 附近敌方英雄威胁判定距离（进入即不安全，先跑）
 };
 
@@ -2302,22 +2321,22 @@ function behaviorScores(u, ctx) {
         const d = Math.hypot(c.x - u.x, c.y - u.y);
         if (d < cd) { cd = d; camp = c; }
       });
-      if (camp && cd < 2400) {
+      if (camp && cd < Math.round(2400*GEO)) {
         j = 76;
-        if (cd < 900) j += 8;
+        if (cd < Math.round(900*GEO)) j += 8;
         // 真空档：附近 700 内既没有敌人也没有可补刀的己方兵 → 打野就是最优解
         let quiet = true;
         game.units.forEach(o => {
           if (o === u || o.hp <= 0) return;
           if (o.side === u.side) return;
-          if (Math.hypot(o.x - u.x, o.y - u.y) < 700) quiet = false;
+          if (Math.hypot(o.x - u.x, o.y - u.y) < 700*GEO) quiet = false;
         });
         if (quiet) j += 14;
         // 同队已经有人在刷这片营地 → 减半，避免扎堆
         let mates = 0;
         game.units.forEach(o => {
           if (o.isHero && o.side === u.side && o !== u && o.hp > 0
-              && Math.hypot(o.x - camp.x, o.y - camp.y) < 500) mates++;
+              && Math.hypot(o.x - camp.x, o.y - camp.y) < 500*GEO) mates++;
         });
         if (mates >= 1) j *= 0.5;
         // 己方塔前被打崩（3 个以上敌兵压塔那档）时绝不去打野
@@ -2382,7 +2401,7 @@ const COUNTER_P = {
   carryWeight: 1,   // 敌方核心在护甲画像里的票数：=3 实测等级差 -0.83→-1.85 (t=-2.43 显著变差)，默认 1 即关闭
   enableDeny: 1,    // 反补开关：1=允许英雄补掉自家残血兵（断对方经济）
   denyHpPct: 0.5,   // 反补血线（DotA 同档：己方小兵 50% 以下可反补）
-  denyRange: 600    // 只有敌方英雄在这个距离内才值得反补
+  denyRange: Math.round(600*GEO)    // 只有敌方英雄在这个距离内才值得反补
 };
 if (typeof window !== 'undefined' && window.__strat) Object.assign(COUNTER_P, window.__strat);
 
@@ -2610,7 +2629,7 @@ function applyHeroBehavior(u, dt, moveSpeed) {
     // v13.13 回城：非必要不回（费经济费时间）；一旦判定该回就果断回（战死更亏）。
     // 流程：先跑到安全位置(脱离敌方英雄威胁/塔射程) → 安全处读条5s → 完成瞬移回基地+扣费。
     // 受击打断 → 先跑远再读条（被打断还原地硬读=傻，先跑）。
-    const baseX = ownBaseX, baseY = 1080;
+    const baseX = ownBaseX, baseY = LANE_Y[1];
     const distToBase = Math.hypot(u.x-baseX, u.y-baseY);
     if (distToBase < AI_PARAMS.baseRegenRange) {
       // 已在回血圈：直接回血，不扣费
@@ -2774,24 +2793,27 @@ function applyHeroBehavior(u, dt, moveSpeed) {
 
 // 位置约束（道路中心/基地跨路/边界）
 function clampUnitPos(u) {
-  if (u.x<30) u.x=30;
-  if (u.x>WORLD_W-30) u.x=WORLD_W-30;
+  const EDGE = Math.round(30 * GEO);
+  if (u.x<EDGE) u.x=EDGE;
+  if (u.x>WORLD_W-EDGE) u.x=WORLD_W-EDGE;
   const baseX = u.side==='my'?MY_BASE_X:EN_BASE_X;
-  const nearBase = Math.abs(u.x-baseX)<700;
+  const nearBase = Math.abs(u.x-baseX) < 700 * GEO;
   if (!nearBase) {
     // v14.4 野区走廊：英雄可在路间野区穿行（追敌/支援隔壁路），兵线与召唤物仍锁单路
+    const WILD_PAD = Math.round(60 * GEO);   // 野区走廊上下余量
+    const ROAD_PAD = Math.round(55 * GEO);   // 单路锁定的左右余量
     if (u.isHero && inWildBand(u.x)) {
-      if (u.y < LANE_Y[0]-60) u.y = LANE_Y[0]-60;
-      if (u.y > LANE_Y[2]+60) u.y = LANE_Y[2]+60;
+      if (u.y < LANE_Y[0]-WILD_PAD) u.y = LANE_Y[0]-WILD_PAD;
+      if (u.y > LANE_Y[2]+WILD_PAD) u.y = LANE_Y[2]+WILD_PAD;
       u.lane = nearestLaneByY(u.y);
     } else {
       const lc = getRoadY(u.lane,u.x);
-      if (u.y<lc-55) u.y=lc-55;
-      if (u.y>lc+55) u.y=lc+55;
+      if (u.y<lc-ROAD_PAD) u.y=lc-ROAD_PAD;
+      if (u.y>lc+ROAD_PAD) u.y=lc+ROAD_PAD;
     }
   } else {
-    if (u.y<100) u.y=100;
-    if (u.y>WORLD_H-100) u.y=WORLD_H-100;
+    if (u.y<Math.round(100*GEO)) u.y=Math.round(100*GEO);
+    if (u.y>WORLD_H-Math.round(100*GEO)) u.y=WORLD_H-Math.round(100*GEO);
   }
 }
 
@@ -2962,9 +2984,9 @@ function legacyMyHeroAuto(u, dt, moveSpeed, atkSpd) {
     u._barbarianChasing = false;
   }
   // 3. _waitForTeam / _holdPosition 计算（供下方推塔/推进参考）
-  const nearbyAllies = game.units.filter(o => o.isHero && o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x,o.y-u.y) < 400);
+  const nearbyAllies = game.units.filter(o => o.isHero && o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x,o.y-u.y) < 400*GEO);
   u._waitForTeam = nearbyAllies.length < 2;
-  const nearbyMinions = game.units.filter(o => o.type==='minion' && o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x,o.y-u.y) < 500);
+  const nearbyMinions = game.units.filter(o => o.type==='minion' && o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x,o.y-u.y) < 500*GEO);
   const enemyInRange = game.units.some(o => o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x,o.y-u.y) < u.range*2);
   u._holdPosition = (nearbyMinions.length < 3 && !enemyInRange);
   return false; // 其余目标选择/追击/推进交给 simpleCombatMove（v12原版主流程）
@@ -2973,7 +2995,7 @@ function legacyMyHeroAuto(u, dt, moveSpeed, atkSpd) {
 function simpleCombatMove(u, dt, moveSpeed, atkSpd) {
   const def = UNIT_TYPES[u.type] || { color:'#fff' };
   const baseX = u.side==='my'?MY_BASE_X:EN_BASE_X;
-  const nearBase = Math.abs(u.x-baseX)<700;
+  const nearBase = Math.abs(u.x-baseX) < 700*GEO;
   let bestT=null, bestD=Infinity;
   // R2：英雄补刀——优先找血量<35%的同路敌方小兵（最后一击）
   if (u.isHero) {
@@ -3665,7 +3687,7 @@ function updateUnits(game, dt) {
       onHeroDeath(u);
       if (heroUsesUtilityAI(u)) {
         const eSide = u.side==='my' ? 'enemy' : 'my';
-        const dive = game.towers.some(t => t.side===eSide && !t.isBase && Math.hypot(t.x-u.x, t.y-u.y) < 600);
+        const dive = game.towers.some(t => t.side===eSide && !t.isBase && Math.hypot(t.x-u.x, t.y-u.y) < 600*GEO);
         if (dive) aiStat(u.side, 'towerDiveDeath');
       }
     }
@@ -3866,7 +3888,7 @@ function update(dt) {
           let slowedN = 0;
           game.units.forEach(u => {
             if (u.type !== 'minion' || u.side !== breaker || u.hp <= 0 || !u.st) return;
-            if (Math.hypot(u.x - t.x, u.y - t.y) > 700) return;
+            if (Math.hypot(u.x - t.x, u.y - t.y) > 700*GEO) return;
             u.st.slow = Math.max(u.st.slow, 5);
             slowedN++;
           });
@@ -4065,24 +4087,24 @@ function render() {
   // 路：三条独立直路（四层描边：外沿暗边 → 路面 → 路心亮带 → 中线虚线）
   const lanePath = (y) => {
     ctx.beginPath();
-    ctx.moveTo(150, 1080);
-    ctx.quadraticCurveTo(600, y, 1140, y);
-    ctx.lineTo(3060, y);
-    ctx.quadraticCurveTo(3600, y, 4050, 1080);
+    ctx.moveTo(MY_BASE_X, LANE_Y[1]);
+    ctx.quadraticCurveTo(ROAD_BEND_MY, y, ROAD_STRAIGHT_X0, y);
+    ctx.lineTo(ROAD_STRAIGHT_X1, y);
+    ctx.quadraticCurveTo(ROAD_BEND_EN, y, EN_BASE_X, LANE_Y[1]);
     ctx.stroke();
   };
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   // 1) 外沿暗边（比路面宽 20，让路"嵌进"地面）
-  ctx.lineWidth = 386;
+  ctx.lineWidth = Math.round(386 * GEO);
   ctx.strokeStyle = shadeColor(T.road, -26);
   LANE_Y.forEach(y => lanePath(y));
   // 2) 路面主体
-  ctx.lineWidth = 366;
+  ctx.lineWidth = Math.round(366 * GEO);
   ctx.strokeStyle = T.road;
   LANE_Y.forEach(y => lanePath(y));
   // 3) 路心亮带（被踩实的中央通道）
-  ctx.lineWidth = 246;
+  ctx.lineWidth = Math.round(246 * GEO);
   ctx.strokeStyle = shadeColor(T.road, 12);
   LANE_Y.forEach(y => lanePath(y));
   // 4) 两侧路缘细线
@@ -4412,7 +4434,7 @@ function render() {
         } else {
           ctx.fillStyle = u.side==='my' ? '#4FC3F7' : '#EF5350';
           ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center';
-          ctx.fillText(u.name||UNIT_TYPES[u.type].name, u.x, u.y - 104);
+          ctx.fillText(u.name || (UNIT_TYPES[u.type] && UNIT_TYPES[u.type].name) || '单位', u.x, u.y - 104);
         }
         ctx.textAlign = 'start';
         return;
@@ -5473,10 +5495,10 @@ function render() {
   ctx.strokeStyle = T.road; ctx.lineWidth = 6; ctx.lineCap = 'round';
   LANE_Y.forEach(y => {
     ctx.beginPath();
-    ctx.moveTo(mmX + 150*mmScaleX, mmY + 1080*mmScaleY);
+    ctx.moveTo(mmX + MY_BASE_X*mmScaleX, mmY + LANE_Y[1]*mmScaleY);
     ctx.quadraticCurveTo(mmX + 600*mmScaleX, mmY + y*mmScaleY, mmX + 1140*mmScaleX, mmY + y*mmScaleY);
     ctx.lineTo(mmX + 3060*mmScaleX, mmY + y*mmScaleY);
-    ctx.quadraticCurveTo(mmX + 3600*mmScaleX, mmY + y*mmScaleY, mmX + 4050*mmScaleX, mmY + 1080*mmScaleY);
+    ctx.quadraticCurveTo(mmX + ROAD_BEND_EN*mmScaleX, mmY + y*mmScaleY, mmX + EN_BASE_X*mmScaleX, mmY + LANE_Y[1]*mmScaleY);
     ctx.stroke();
   });
   ctx.lineCap = 'butt';
@@ -6029,12 +6051,13 @@ const TERRAIN_H = Math.round(WORLD_H * TERRAIN_SCALE);
 // 四块野区（上下两条路之间的空地：y 570~900 / 1260~1590，中间留出中央广场）
 // v14.40 野区「区域」真镜像（x→4200-x, y→2160-y）：两块各宽 1140，上下两条带关于 y=1080 对称
 // 说明：美术纹理/树丛不做镜像（主人口径：纹理无所谓，只要功能与路线对称）
+// v14.43 随 GEO 等比放大：宽 1140→1710、高 312→468（面积 2.25 倍），四块仍严格镜像
 const WILD_ZONES = [
   { x: 480,  y: 578,  w: 1140, h: 312 },   // 上路-中路 左
   { x: 2580, y: 578,  w: 1140, h: 312 },   // 上路-中路 右（480 的镜像）
   { x: 480,  y: 1270, w: 1140, h: 312 },   // 中路-下路 左（578 的镜像）
   { x: 2580, y: 1270, w: 1140, h: 312 }    // 中路-下路 右
-];
+].map(z => ({ x: Math.round(z.x*GEO), y: Math.round(z.y*GEO), w: Math.round(z.w*GEO), h: Math.round(z.h*GEO) }));
 
 // ===== v14.42 野区营地（野怪）=====
 // 位置严格镜像：1050 ↔ 3150（x→4200-x），734 ↔ 1426（y→2160-y）
@@ -6046,9 +6069,9 @@ const CAMP_DEFS = [
   { key: 'B', kind: 'red',  x: 3150, y: 734  },
   { key: 'C', kind: 'blue', x: 1050, y: 1426 },
   { key: 'D', kind: 'blue', x: 3150, y: 1426 },
-];
+].map(c => ({ key: c.key, kind: c.kind, x: Math.round(c.x*GEO), y: Math.round(c.y*GEO) }));
 const CAMP_RESPAWN = 45;      // 击杀后重生秒数（王者红蓝 buff 90s，本作节奏快一倍）
-const CAMP_LEASH_R  = 380;    // 脱战回营半径
+const CAMP_LEASH_R  = Math.round(380 * GEO);    // 脱战回营半径（随 GEO 放大）
 const CAMP_GOLD     = { red: 45, blue: 40 };
 const CAMP_EXP      = 110;
 const CAMP_BUFF_T   = 25;     // buff 持续秒数
@@ -6061,7 +6084,7 @@ function spawnCampMonster(camp) {
     lane: nearestLaneByY(camp.y), side: 'neutral', type: 'monster', isMonster: true,
     campRef: camp, kind: camp.kind, dir: 1, level: 1,
     name: isRed ? '烈焰野怪' : '霜寒野怪',
-    hp, maxHp: hp, atk: 26, atkSpeed: 0.8, range: 78, speed: 55, atkTimer: 0,
+    hp, maxHp: hp, atk: 26, atkSpeed: 0.8, range: Math.round(78*GEO), speed: Math.round(55*GEO), atkTimer: 0,
     atkType: 'normal', armorType: 'light', flatArmor: 2, baseArmor: 2,
     crit: 0, dodge: 0, st: {}, currentTarget: null, targetSwitchTimer: 0,
     firstAttackDone: true, _aggroT: 0,
@@ -6078,7 +6101,7 @@ function monsterTick(u, dt) {
   const homeDist = Math.hypot(u.x - u.homeX, u.y - u.homeY);
   // 脱战或离营太远 → 回营并回血（王者/LOL 的 leash 机制）
   if (u._aggroT <= 0 || homeDist > CAMP_LEASH_R) {
-    if (homeDist > 12) {
+    if (homeDist > 12 * GEO) {
       const a = Math.atan2(u.homeY - u.y, u.homeX - u.x);
       u.x += Math.cos(a) * u.speed * dt;
       u.y += Math.sin(a) * u.speed * dt;
@@ -6094,7 +6117,7 @@ function monsterTick(u, dt) {
   for (const o of game.units) {
     if (o === u || o.hp <= 0 || o.isMonster) continue;
     const d = Math.hypot(o.x - u.x, o.y - u.y);
-    if (d < 320 && d < bd) { bd = d; best = o; }
+    if (d < 320 * GEO && d < bd) { bd = d; best = o; }
   }
   if (!best) { u.animState = 'idle'; return; }
   if (bd > u.range) {
@@ -6235,37 +6258,37 @@ function buildTerrainTexture(themeName) {
       g.beginPath(); g.ellipse(px, py, rw * 0.5, rh * 0.5, rnd() * 3.14, 0, Math.PI * 2); g.fill();
     }
   };
-  drawRockBand(0, 28, WORLD_W, 0, true);
-  drawRockBand(0, WORLD_H - 28, WORLD_W, 0, true);
-  drawRockBand(28, 0, 0, WORLD_H, false);
-  drawRockBand(WORLD_W - 28, 0, 0, WORLD_H, false);
+  drawRockBand(0, 28*GEO, WORLD_W, 0, true);
+  drawRockBand(0, WORLD_H - 28*GEO, WORLD_W, 0, true);
+  drawRockBand(28*GEO, 0, 0, WORLD_H, false);
+  drawRockBand(WORLD_W - 28*GEO, 0, 0, WORLD_H, false);
 
   // ---- 4. 中央遗迹广场（交战区地标）----
   const cx = WORLD_W / 2, cy = WORLD_H / 2;
   // 外圈大环
   g.strokeStyle = 'rgba(200,170,90,0.16)';
   g.lineWidth = 18;
-  g.beginPath(); g.arc(cx, cy, 300, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(cx, cy, Math.round(300*GEO), 0, Math.PI * 2); g.stroke();
   g.strokeStyle = 'rgba(255,215,120,0.10)';
   g.lineWidth = 3;
-  g.beginPath(); g.arc(cx, cy, 300, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(cx, cy, Math.round(300*GEO), 0, Math.PI * 2); g.stroke();
   // 内圈符文环
   g.strokeStyle = 'rgba(230,200,120,0.22)';
   g.lineWidth = 2;
-  g.beginPath(); g.arc(cx, cy, 150, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.arc(cx, cy, Math.round(150*GEO), 0, Math.PI * 2); g.stroke();
   // 放射符线（12 道）
   g.strokeStyle = 'rgba(230,200,120,0.13)';
   g.lineWidth = 2;
   for (let i = 0; i < 12; i++) {
     const a = i * Math.PI / 6;
     g.beginPath();
-    g.moveTo(cx + Math.cos(a) * 40, cy + Math.sin(a) * 40);
-    g.lineTo(cx + Math.cos(a) * 145, cy + Math.sin(a) * 145);
+    g.moveTo(cx + Math.cos(a) * 40*GEO, cy + Math.sin(a) * 40*GEO);
+    g.lineTo(cx + Math.cos(a) * 145*GEO, cy + Math.sin(a) * 145*GEO);
     g.stroke();
   }
   // 广场地面石板
   g.fillStyle = 'rgba(60,58,72,0.22)';
-  g.beginPath(); g.arc(cx, cy, 130, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(cx, cy, Math.round(130*GEO), 0, Math.PI * 2); g.fill();
 
   // ---- 5. 道路两侧的土色镶边（让路面"沉"下去）----
   g.strokeStyle = 'rgba(0,0,0,0.16)';
@@ -6291,8 +6314,8 @@ function buildDecorations() {
   const pushIfClear = (x, y, kind, s) => {
     if (x < 40 || x > WORLD_W - 40 || y < 40 || y > WORLD_H - 40) return;
     for (const ly of LANE_Y) { if (Math.abs(y - ly) < 195) return; }
-    if (x < 250 && Math.abs(y - 1080) < 250) return;
-    if (x > 3950 && Math.abs(y - 1080) < 250) return;
+    if (x < 250*GEO && Math.abs(y - LANE_Y[1]) < 250*GEO) return;
+    if (x > (4200-250)*GEO && Math.abs(y - LANE_Y[1]) < 250*GEO) return;
     // 塔位净空
     for (const tx of MY_TOWER_X) for (const ly of LANE_Y) if (Math.hypot(x-tx, y-ly) < 95) return;
     for (const tx of EN_TOWER_X) for (const ly of LANE_Y) if (Math.hypot(x-tx, y-ly) < 95) return;
@@ -6426,7 +6449,7 @@ canvas.addEventListener('wheel', e => {
 canvas.addEventListener('click', e => {
   try {
   const pos = toCanvasXY(e.clientX, e.clientY);
-  const cx = pos.cx, cy = pos.cy;
+  let cx = pos.cx, cy = pos.cy; // v14.43 修 bug：下方 cy -= HUD_H 需要可写，const 会导致点「开始对战」直接抛 TypeError
   // 游戏结束时：点击"再来"按钮重启
   if (game.gameOver) {
     if (game._restartBtn && cx >= game._restartBtn.x && cx <= game._restartBtn.x+game._restartBtn.w &&
@@ -8076,7 +8099,7 @@ function resizeCanvas() {
   }
   // 游戏仅横屏：默认视野拉远看更多地图并纵向居中，内容饱满不逼仄。用户手动调过后不再覆盖。
   if (!zoomManual) {
-    zoom = 0.56;
+    zoom = Math.round((0.56 / GEO) * 100) / 100;
     viewY = Math.max(0, (WORLD_H - VIEW_H/zoom)/2);
     viewX = 0;
     clampView();
