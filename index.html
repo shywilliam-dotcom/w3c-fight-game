@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.47';
+const VERSION = 'v14.49';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -477,11 +477,11 @@ const UNIT_TYPES = {
   paladin:  { name:'圣骑士', armor:8, shape:'circle', size:11, hp:500, atk:12, atkSpeed:1.0, range:15, speed:70, cost:100, color:'#FFD700', atkType:'melee', armorType:'heavy', ult:'holyUlt',
     skill1:{k:'holyHeal',v:1}, skill2:null, skill3:{k:'strikeStun',v:0.10}, desc:'低血回血25%CD15s+高护甲+10%攻击晕1秒+死亡给最低血友方回满血 | 大招回血100%CD60s（中期强）' },
   fighter:  { name:'格斗家', armor:1, shape:'circle', size:10, hp:400, atk:20, atkSpeed:1.3, range:15, speed:80, cost:115, color:'#FF6B9D', atkType:'melee', armorType:'medium', ult:'dodgeUlt',
-    skill1:{k:'dodge',v:0.15}, skill2:{k:'charge',v:200}, desc:'15%闪避+瞬影步冲锋CD5s | 大招躲闪后无敌2秒+周围120范围100%伤害CD25s（后期强）' },
+    skill1:{k:'dodge',v:0.15}, skill2:{k:'charge',v:200}, desc:'15%闪避(每级+5%)+闪避后贴身反击CD1s+瞬影步冲锋CD5s | 大招躲闪后无敌2秒+周围120范围100%伤害CD25s（后期强）' },
 
   // 弓手升级（大招=穿透箭）
   musketeer:{ name:'火枪手', armor:3, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.9, range:150, speed:70, cost:108, color:'#B8860B', atkType:'pierce', armorType:'medium', ult:'pierceShot',
-    skill1:{k:'instantKill',v:0.03}, skill2:{k:'splash',v:0.25}, desc:'3%即死(每级+0.5%)+25%溅射 | 大招穿透射击:直线400内5个单位CD35s（中期强）' },
+    skill1:{k:'instantKill',v:0.03}, skill2:{k:'splash',v:0.25}, desc:'3%即死(固定概率,不吃等级)+25%溅射 | 大招穿透射击:直线400内5个单位CD35s（中期强）' },
   ranger:   { name:'游侠', armor:2, shape:'triangle', size:9, hp:220, atk:11, atkSpeed:1.0, range:220, speed:70, cost:130, color:'#228B22', atkType:'pierce', armorType:'light', ult:'arrowRain',
     skill1:{k:'poison',v:0.25}, skill2:{k:'longRange',v:1}, desc:'25%毒箭(最多叠4层)+超远射程 | 大招箭雨：150范围4波×120%伤害，CD40s（初期强）' },
   crossbow: { name:'破甲弩手', armor:2, shape:'triangle', size:9, hp:200, atk:10, atkSpeed:0.5, range:145, speed:70, cost:95, color:'#4682B4', atkType:'pierce', armorType:'light', ult:'rapidFire',
@@ -489,7 +489,7 @@ const UNIT_TYPES = {
 
   // 法师升级（大招=暴风雪）
   arcane:   { name:'奥法', armor:2, shape:'diamond', size:9, hp:200, atk:18, atkSpeed:0.6, range:135, speed:65, cost:135, color:'#FF00FF', atkType:'magic', armorType:'medium', ult:'arcaneBlink',
-    skill1:{k:'polymorph',v:0.10}, skill2:{k:'shieldWall',v:0.40}, skill3:{k:'summonGolem',v:15}, desc:'10%变羊+群体护盾40%血+召唤傀儡(CD15s) | 大招濒死传送回基地回20%血CD60s（初期强）' },
+    skill1:{k:'polymorph',v:0.10}, skill2:{k:'shieldWall',v:0.40}, skill3:{k:'summonGolem',v:15}, desc:'10%变羊+群体护盾40%血(CD15s)+召唤傀儡(CD15s)+贴身时魔法/法杖交替攻击 | 大招濒死传送回基地回20%血CD60s（初期强）' },
   ice:      { name:'冰法', armor:0, shape:'diamond', size:10, hp:250, atk:10, atkSpeed:0.6, range:135, speed:65, cost:118, color:'#00BFFF', atkType:'magic', armorType:'unarmored', ult:'blizzardNova',
     skill1:{k:'shieldAlly',v:0.15}, skill2:{k:'vulnerable',v:0.33}, desc:'友方冰霜护盾减伤15%+近战攻击者减速20%攻速降20%+33%概率易伤（中期强）' },
   fire:     { name:'暗火法', armor:0, shape:'diamond', size:9, hp:200, atk:15, atkSpeed:0.6, range:135, speed:65, cost:128, color:'#9C27B0', atkType:'magic', armorType:'unarmored', ult:'fireBlast',
@@ -852,7 +852,7 @@ function applyUnitSkills(u) {
     else if (s.k==='berserk') u.berserk = !!s.v;
     else if (s.k==='holyHeal') u.holyHeal = !!s.v;
     else if (s.k==='iceBlock') u.iceBlock = !!s.v;
-    else if (s.k==='summonGolem') u.summonGolem = s.v*mul;
+    else if (s.k==='summonGolem') u.summonGolem = s.v; // v14.49 CD 不吃等级倍率
     else if (s.k==='chainLightning') u.chainLightning = s.v;
     else if (s.k==='buildingDamage') u.buildingDamage = s.v;
     else if (s.k==='longRange') u.range *= 1.3;
@@ -947,7 +947,7 @@ function spawnUnit(b) {
     else if (s.k==='berserk') u.berserk = !!s.v;
     else if (s.k==='holyHeal') u.holyHeal = !!s.v;
     else if (s.k==='iceBlock') u.iceBlock = !!s.v;
-    else if (s.k==='summonGolem') u.summonGolem = s.v*mul;
+    else if (s.k==='summonGolem') u.summonGolem = s.v; // v14.49 CD 不吃等级倍率
     else if (s.k==='chainLightning') u.chainLightning = s.v;
     else if (s.k==='buildingDamage') u.buildingDamage = s.v;
     else if (s.k==='longRange') u.range *= 1.3;
@@ -969,7 +969,7 @@ function spawnUnit(b) {
     else if (s.k==='armorReduce') u.armorReduce = s.v;
   });
   // 格斗家专属：闪避随等级大幅成长（后期型）
-  if (b.unitType==='fighter') u.dodge += (lv-1)*0.05;
+  if (b.unitType==='fighter') { u.dodge += (lv-1)*0.05; u.dodgeCounter = true; }
   // v14.33 修复阵营不对称：羁绊原来只对 side==='my' 生效，敌方 buff 算出来从来没用过
   function buffsOf(side) {
     const b = (side === 'my') ? game.myBuffs : game.enemyBuffs;
@@ -1119,7 +1119,7 @@ function spawnHero(altar, slotIdx) {
     else if (s.k==='summonGolem') u.summonGolem = s.v;
     else if (s.k==='summonSkeleton') u.summonSkeleton = s.v;
   });
-  if (slot.unitType==='fighter') u.dodge += (lv-1)*0.05;
+  if (slot.unitType==='fighter') { u.dodge += (lv-1)*0.05; u.dodgeCounter = true; }
   game.units.push(u);
   // v14.35 只有玩家主动接管才算"受控"：这里不再自动接管任何英雄
   // 理由（主人）：玩家没接管的时候英雄本来就该由 AI 处理，不该白占一个受控位。
@@ -1290,8 +1290,14 @@ function doAttack(att, tgt, def) {
   if(DEBUG){ att._atkLogThrottle++; if(att._atkLogThrottle%20===0) dlog('attack', (att.name||att.type)+' -> '+(tgt.name||tgt.type||'tower'), {side:att.side}); }
   // 奥战法：目标在近战范围(<30)时，交替使用魔法攻击和普通攻击
   if (att.type === 'arcane' && tgt.type !== undefined) {
-    const dist = Math.abs(att.x - tgt.x);
-    if (dist < 30) {
+    const dist = Math.hypot(att.x - tgt.x, att.y - tgt.y);
+    // v14.49 阈值与近战同基准（旧值 30 比近战射程 56 还近，等于永不触发）
+    const meleeContact = 15 * (1 + ((att.level||1)-1)*0.05) * SCALE + (att.size||10) + (tgt.size||10);
+    // 目标本身就是近战兵、且已贴到它自己的近战射程内 → 进入"法杖交替"模式
+    const meleeOnTop = (tgt.atkType === 'melee')
+      ? Math.max(meleeContact, (tgt.range || meleeContact) + (att.size||10) + (tgt.size||10))
+      : meleeContact;
+    if (dist <= meleeOnTop) {
       att._arcaneAlt = !att._arcaneAlt;
       if (att._arcaneAlt) {
         att.atkType = 'magic';
@@ -1455,7 +1461,7 @@ function doAttack(att, tgt, def) {
     let splashHit = 0;
     game.units.forEach(o => {
       if (o.lane===att.lane && o.side!==att.side && o.hp>0 && o!==tgt &&
-          Math.hypot(o.x-tgt.x, o.y-tgt.y)<50) { applyDmg(att,o,dmg*0.5,def); splashHit++; }
+          Math.hypot(o.x-tgt.x, o.y-tgt.y)<50*SCALE) { applyDmg(att,o,dmg*0.5,def); splashHit++; }
     });
     if (splashHit>0) {
       const attName = UNIT_TYPES[att.type] ? UNIT_TYPES[att.type].name : (att.name||'单位');
@@ -1478,7 +1484,7 @@ function doAttack(att, tgt, def) {
     game.units.forEach(o => {
       if (hit>=att.aoe-1) return;
       if (o.lane===att.lane && o.side!==att.side && o.hp>0 && o!==tgt &&
-          Math.hypot(o.x-att.x, o.y-att.y)<60) { applyDmg(att,o,dmg*0.8,def); hit++; }
+          Math.hypot(o.x-att.x, o.y-att.y)<60*SCALE) { applyDmg(att,o,dmg*0.8,def); hit++; }
     });
   }
   // 特斯拉连锁闪电：跳chainLightning个目标，伤害递减，目标间距离限制120
@@ -1510,7 +1516,7 @@ function doAttack(att, tgt, def) {
   if (att.healAlly>0) {
     let lowest = null, lowestPct = 1.1;
     game.units.forEach(o => {
-      if (o.side===att.side && o.hp>0 && o!==att && Math.hypot(o.x-att.x, o.y-att.y)<150) {
+      if (o.side===att.side && o.hp>0 && o!==att && Math.hypot(o.x-att.x, o.y-att.y)<150*SCALE) {
         const pct = o.hp/o.maxHp;
         if (pct < lowestPct) { lowestPct = pct; lowest = o; }
       }
@@ -1547,7 +1553,7 @@ function doAttack(att, tgt, def) {
         att.st.iceBlock = 1;
         game.units.forEach(o => {
           if (o.lane===att.lane && o.side!==att.side && o.hp>0 &&
-              Math.hypot(o.x-att.x, o.y-att.y)<120) applyDmg(att,o,dmg,def);
+              Math.hypot(o.x-att.x, o.y-att.y)<120*SCALE) applyDmg(att,o,dmg,def);
         });
         att.dodgeUltCD = 15;
         ultUsed = true;
@@ -1622,7 +1628,7 @@ function doAttack(att, tgt, def) {
         game.units.forEach(o => {
           if (hit>=5) return;
           if (o.lane===att.lane && o.side!==att.side && o.hp>0 &&
-              Math.hypot(o.x-att.x, o.y-att.y)<400) { applyDmg(att,o,dmg*3,def); hit++; }
+              Math.hypot(o.x-att.x, o.y-att.y)<400*SCALE) { applyDmg(att,o,dmg*3,def); hit++; }
         });
         att.pierceCD = 35;
         ultUsed = true;
@@ -1635,7 +1641,7 @@ function doAttack(att, tgt, def) {
       if (!att.blizzardCD || att.blizzardCD<=0) {
         game.units.forEach(o => {
           if (o.lane===att.lane && o.side!==att.side && o.hp>0 &&
-              Math.hypot(o.x-tgt.x, o.y-tgt.y)<180) {
+              Math.hypot(o.x-tgt.x, o.y-tgt.y)<180*SCALE) {
             applyDmg(att,o,80*Math.pow(1.1,(att.level||1)-1),def);
             if (o.st) { o.st.stun=3; o.st.slow=5; o.st.vulnerable=5; }
           }
@@ -1721,16 +1727,20 @@ function applyDmg(att, tgt, dmg, def) {
       return;
     }
     // 眩晕时无法闪避
-    if (tgt.dodge && tgt.st.stun<=0 && Math.random()<tgt.dodge) {
+    if (tgt.dodge && tgt.st.stun<=0 && !tgt._beingCountered && Math.random()<tgt.dodge) {
       const tgtName = UNIT_TYPES[tgt.type] ? UNIT_TYPES[tgt.type].name : (tgt.name||'单位');
       const attName = UNIT_TYPES[att.type] ? UNIT_TYPES[att.type].name : (att.name||'单位');
       // 闪避反击：格斗家闪避后立刻反击，每秒最多一次
-      if (tgt.dodgeCounter && att.hp>0 && (!tgt.counterCD || tgt.counterCD<=0)) {
-        let counterDmg = tgt.atk * 1.0;
-        att.hp -= counterDmg;
+      const counterReach = 15 * (1 + ((tgt.level||1)-1)*0.05) * SCALE + (tgt.size||10) + (att.size||10);
+      const inContact = Math.hypot(att.x-tgt.x, att.y-tgt.y) <= counterReach;
+      if (tgt.dodgeCounter && att.hp>0 && inContact && (!tgt.counterCD || tgt.counterCD<=0)) {
+        const counterDmg = tgt.atk * 1.0;
+        att._beingCountered = true;
         tgt.counterCD = 1;
         spawnProj(tgt, att, '#FF6B9D');
-        pushCombatLog(`👊${tgtName} 闪避了 ${attName} 的攻击并反击！造成${Math.round(counterDmg)}伤害`);
+        applyDmg(tgt, att, counterDmg, def);
+        att._beingCountered = false;
+        pushCombatLog(`👊${tgtName} 闪避了 ${attName} 的攻击并反击！反击伤害${Math.round(counterDmg)}`);
       } else {
         pushCombatLog(`💨${tgtName} 闪避了 ${attName} 的攻击！`);
       }
@@ -1739,7 +1749,7 @@ function applyDmg(att, tgt, dmg, def) {
         tgt.st.iceBlock = 1;
         game.units.forEach(o => {
           if (o.lane===tgt.lane && o.side!==tgt.side && o.hp>0 &&
-              Math.hypot(o.x-tgt.x, o.y-tgt.y)<120) applyDmg(tgt,o,tgt.atk,def);
+              Math.hypot(o.x-tgt.x, o.y-tgt.y)<120*SCALE) applyDmg(tgt,o,tgt.atk,def);
         });
         tgt.dodgeUltCD = 15;
         pushCombatLog(`⚡${tgtName} 触发一闪！无敌1秒+范围伤害`);
@@ -3400,7 +3410,7 @@ function updateUnits(game, dt) {
         u._efTimer = 0;
         let efHits = 0;
         game.units.forEach(o => {
-          if (o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<50) {
+          if (o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<50*SCALE) {
             applyDmg(u, o, u.electricField, null);
             efHits++;
           }
@@ -3463,7 +3473,7 @@ function updateUnits(game, dt) {
         u.arrowRainWaves--;
         game.units.forEach(o => {
           if (o.lane===u.arrowRainLane && o.side!==u.side && o.hp>0 &&
-              Math.hypot(o.x-u.arrowRainX, o.y-(LANE_Y[u.arrowRainLane]||360))<150) {
+              Math.hypot(o.x-u.arrowRainX, o.y-(LANE_Y[u.arrowRainLane]||360))<150*SCALE) {
             o.hp -= u.arrowRainDmg; // 范围伤害
           }
         });
@@ -3485,7 +3495,7 @@ function updateUnits(game, dt) {
       if (u.whirlwindTick<=0) {
         u.whirlwindTick = 0.5;
         game.units.forEach(o => {
-          if (o.lane===u.lane && o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<80) {
+          if (o.lane===u.lane && o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<80*SCALE) {
             applyDmg(u, o, u.atk * 1.2, null);
           }
         });
@@ -3497,7 +3507,7 @@ function updateUnits(game, dt) {
       game.units.forEach(o => {
         if (o.lane!==u.lane || o.side===u.side || o.hp<=0) return;
         const d = Math.abs(o.x - u.x);
-        if (d < nd && d < 40) { nd = d; nearest = o; }
+        if (d < nd && d < 40*SCALE) { nd = d; nearest = o; }
       });
       if (nearest) {
         u.x -= u.dir * 200; // 后跳
@@ -3516,7 +3526,7 @@ function updateUnits(game, dt) {
       game.units.forEach(o => {
         if (o.lane!==u.lane || o.side===u.side || o.hp<=0) return;
         const d = Math.abs(o.x - u.x);
-        if (d < nd && d < u.charge) { nd = d; nearest = o; }
+        if (d < nd && d < u.charge*SCALE) { nd = d; nearest = o; }
       });
       if (nearest) {
         // 直接冲到敌人面前
@@ -3564,7 +3574,7 @@ function updateUnits(game, dt) {
     if (u.hp<=0 && u.atkType==='siege' && !u.exploded) {
       u.exploded = true;
       game.units.forEach(o => {
-        if (o.lane===u.lane && o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<80) {
+        if (o.lane===u.lane && o.side!==u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<80*SCALE) {
           applyDmg(u,o,u.atk*2,null);
         }
       });
@@ -3598,7 +3608,7 @@ function updateUnits(game, dt) {
         var count = 0;
         game.units.forEach(o => {
           if (count>=5) return;
-          if (o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<150) {
+          if (o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<150*SCALE) {
             o.shield = Math.max(o.shield||0, shieldAmount);
             count++;
           }
@@ -3617,7 +3627,7 @@ function updateUnits(game, dt) {
       else {
         var target = null, bestHpPct = 1;
         game.units.forEach(o => {
-          if (o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<150 && o!==u) {
+          if (o.side===u.side && o.hp>0 && Math.hypot(o.x-u.x, o.y-u.y)<150*SCALE && o!==u) {
             var pct = o.hp/o.maxHp;
             if (pct < bestHpPct) { bestHpPct = pct; target = o; }
           }
@@ -3698,7 +3708,7 @@ function updateUnits(game, dt) {
   game.units.forEach(u => {
     if (u.hp<=0 && !u.deathAuraTriggered && BASE_TYPES.includes(u.type)) {
       u.deathAuraTriggered = true;
-      const allies = game.units.filter(o => o.side===u.side && o.hp>0 && o.lane===u.lane && Math.hypot(o.x-u.x, o.y-u.y)<80);
+      const allies = game.units.filter(o => o.side===u.side && o.hp>0 && o.lane===u.lane && Math.hypot(o.x-u.x, o.y-u.y)<80*SCALE);
       if (u.type==='mage') {
         // 牺牲：80范围友方恢复30%生命
         allies.forEach(o => { o.hp = Math.min(o.maxHp, o.hp + o.maxHp*0.3); });
@@ -3717,7 +3727,7 @@ function updateUnits(game, dt) {
     // 圣骑士死亡技能：被击杀时给附近血量最低友方回满血（大招被动低血时已自动回血，死时大招必在CD）
     if (u.hp<=0 && !u.paladinDeathHeal && u.type==='paladin') {
       u.paladinDeathHeal = true;
-      const allies = game.units.filter(o => o.side===u.side && o.hp>0 && o.lane===u.lane && Math.hypot(o.x-u.x, o.y-u.y)<150);
+      const allies = game.units.filter(o => o.side===u.side && o.hp>0 && o.lane===u.lane && Math.hypot(o.x-u.x, o.y-u.y)<150*SCALE);
       if (allies.length>0) {
         allies.sort((a,b) => (a.hp/a.maxHp) - (b.hp/b.maxHp));
         const target = allies[0];
@@ -7426,7 +7436,7 @@ function createDuelUnit(type, side, lv, x) {
     else if (s.k==='berserk') u.berserk = !!s.v;
     else if (s.k==='holyHeal') u.holyHeal = !!s.v;
     else if (s.k==='iceBlock') u.iceBlock = !!s.v;
-    else if (s.k==='summonGolem') u.summonGolem = s.v*mul;
+    else if (s.k==='summonGolem') u.summonGolem = s.v; // v14.49 CD 不吃等级倍率
     else if (s.k==='chainLightning') u.chainLightning = s.v;
     else if (s.k==='buildingDamage') u.buildingDamage = s.v;
     else if (s.k==='longRange') u.range *= 1.3;
@@ -7447,7 +7457,7 @@ function createDuelUnit(type, side, lv, x) {
     else if (s.k==='healAlly') u.healAlly = s.v;
     else if (s.k==='armorReduce') u.armorReduce = s.v;
   });
-  if (type==='fighter') u.dodge += (lv-1)*0.05;
+  if (type==='fighter') { u.dodge += (lv-1)*0.05; u.dodgeCounter = true; }
   return u;
 }
 
