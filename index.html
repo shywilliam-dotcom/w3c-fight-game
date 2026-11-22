@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.45b';
+const VERSION = 'v14.45c';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -294,12 +294,11 @@ const BARRACK_SLOTS = [
 // 原来是一张写死的 [x,y] 坐标表（[570,885] 之类），弯道形状一改，塔就悬空在草地上，
 // 看着不在路边、射程也只勉强够到路缘。现在给每座塔 (lane, x)，y 由 getRoadY 算出来。
 const TOWER_LANE_X = [1620, 2150, 2800];              // 世界坐标 x；三路在这些 x 上分离 ≥60%，塔不会互相叠
-const TOFF = Math.round(205 * GEO);                   // 塔心离路心的侧向偏移（半路宽 329 + 路肩 40）
+const TOFF = 0;                                        // 塔立在路心（主人口径：立到各路中间，坐标好找、视觉清楚）
 const MY_TOWER_POS = (() => {
   const arr = [];
   for (let lane = 0; lane < 3; lane++) {
-    const sign = lane === 0 ? -1 : 1;                 // 上路塔站路上侧，中路/下路塔站下侧（上下对称）
-    for (const tx of TOWER_LANE_X) arr.push([tx, Math.round(getRoadY(lane, tx) + sign * TOFF), lane, sign]);
+    for (const tx of TOWER_LANE_X) arr.push([tx, Math.round(getRoadY(lane, tx)), lane, 0]);
   }
   return arr;
 })();
