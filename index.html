@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.43';
+const VERSION = 'v14.45b';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -188,10 +188,12 @@ let VIEW_W = 1200; const VIEW_H = 720; // 视口尺寸（VIEW_W 跟随 CANVAS_W�
 // ============ 大战场坐标系统 ============
 // v14.43 地图扩容：基准设计尺寸仍是 4200×2160，GEO 是全局几何倍率
 // 只用一处改倍率就能整张地图放大（塔位/野区/营地/路宽/AI 距离都从这里派生）
-const GEO = 1.5;
+const GEO = 1.8;                // 全局几何倍率（基准 4200x2160）
+const SPEED_MUL = 1.0;          // 赶路补偿：1.0 = 不补偿。实测 1.25 会让先手方优势被放大（补刀差 +7.8%→+41%、野怪 19:13→24:5），
+                                // 故保持单位原速；地图放大后单局约 440s（7.3 分钟），仍在 MOBA 常见区间内
 const WORLD_W = Math.round(4200 * GEO), WORLD_H = Math.round(2160 * GEO);
 const SCALE = 3;
-let zoom = Math.round((0.56 / GEO) * 100) / 100;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节（默认0.56=较0.7缩小20%看更多地图）
+let zoom = 0.50;            // 视野缩放：<1 拉远看更多地图，>1 拉近看细节（默认0.56=较0.7缩小20%看更多地图）
 const ZOOM_MIN = Math.round((0.45 / GEO) * 100) / 100, ZOOM_MAX = 1.2; // v14.43: 视野下限随 GEO 同步放开，保证大地图仍能拉远看全景
 let zoomManual = false;    // 用户是否手动调过 zoom（避免竖屏自适应覆盖）
 let viewX = 0, viewY = Math.round(480 * GEO);
@@ -217,8 +219,11 @@ function toWorldY(y) { return y + viewY; }
 
 const LANE_Y = [390, 1080, 1770].map(v => Math.round(v * GEO)); // 三路y坐标（×3×GEO）
 const LANE_NAMES = ['上路','中路','下路'];
-const MY_BASE_X = Math.round(150 * GEO);   // ×3×GEO
-const EN_BASE_X = Math.round(4050 * GEO);  // ×3×GEO
+// v14.45 主城后撤：150 → 100 基准（世界 270 → 180），敌方镜像 4050 → 4100。
+// 目的：基地原来是三路交汇口，守方要同时挡三个方向；后撤后基地门前多出一段三路合流的
+// 咽喉走廊，守方可以集中一点防守，攻方仍要从三条路分别压上来。
+const MY_BASE_X = Math.round(100 * GEO);   // ×3×GEO
+const EN_BASE_X = Math.round(4100 * GEO);  // ×3×GEO
 
 // 计算道路上任意x处的中心y坐标（处理弯道，所有坐标×3）
 // v14.43 参数化弯道：直道起止、控制点全部由 GEO 派生，地图放大后曲线形状严格等比
@@ -235,18 +240,33 @@ function bezierSolveX(a, b, c, x) {
   const pick = (t1 >= 0 && t1 <= 1) ? t1 : t2;
   return Math.max(0, Math.min(1, pick));
 }
+// v14.45b 路面折线缓存：画面上的路必须与 getRoadY（单位实际走的线）完全一致。
+// 弯道形状已经改过两次，用 quadraticCurveTo 手写控制点必然与逻辑线漂移，这里直接按 getRoadY 采样。
+let _lanePolyCache = null;
+function lanePolyline(lane) {
+  if (!_lanePolyCache) _lanePolyCache = [[], [], []];
+  if (_lanePolyCache[lane].length) return _lanePolyCache[lane];
+  const pts = [];
+  const step = Math.max(6, Math.round(12 * GEO));
+  for (let x = MY_BASE_X; x <= EN_BASE_X; x += step) pts.push([x, getRoadY(lane, x)]);
+  pts.push([EN_BASE_X, getRoadY(lane, EN_BASE_X)]);
+  _lanePolyCache[lane] = pts;
+  return pts;
+}
 function getRoadY(lane, x) {
   const laneY = LANE_Y[lane];
   const baseY = LANE_Y[1];
   if (x >= ROAD_STRAIGHT_X0 && x <= ROAD_STRAIGHT_X1) return laneY; // 直道
   if (x < ROAD_STRAIGHT_X0) {
-    // 我方弯道：P0(MY_BASE_X,baseY) P1(ROAD_BEND_MY,laneY) P2(ROAD_STRAIGHT_X0,laneY)
+    // v14.45 我方弯道：P0(MY_BASE_X,baseY) P1(ROAD_BEND_MY,baseY) P2(ROAD_STRAIGHT_X0,laneY)
+    // 控制点 y 也压在中路上 → 靠近基地那半段三条路几乎重合（合流咽喉），
+    // 到 t 较大（接近直道）才展开成三条独立兵线。守方能在基地门口集中防守。
     const t = bezierSolveX(MY_BASE_X, ROAD_BEND_MY, ROAD_STRAIGHT_X0, x);
-    return baseY + t*(2*laneY-2*baseY) + t*t*(baseY-laneY);
+    return baseY + (laneY - baseY) * t * t;
   } else {
-    // 敌方弯道：P0(ROAD_STRAIGHT_X1,laneY) P1(ROAD_BEND_EN,laneY) P2(EN_BASE_X,baseY)
+    // 敌方弯道（严格镜像）：P0(ROAD_STRAIGHT_X1,laneY) P1(ROAD_BEND_EN,baseY) P2(EN_BASE_X,baseY)
     const t = bezierSolveX(ROAD_STRAIGHT_X1, ROAD_BEND_EN, EN_BASE_X, x);
-    return laneY + t*t*(baseY-laneY);
+    return baseY + (laneY - baseY) * (1 - t) * (1 - t);
   }
 }
 
@@ -270,10 +290,19 @@ const BARRACK_SLOTS = [
   {x:15, y:1620, lane:2}, {x:15, y:1860, lane:2},
   {x:195, y:1620, lane:2}, {x:195, y:1860, lane:2}
 ];
-// 我方塔x坐标（×3）
-const MY_TOWER_X = [690, 819, 945];
-// 敌方塔x坐标（×3）
-const EN_TOWER_X = [3255, 3381, 3510];
+// v14.45b 塔位改为按道路派生：塔永远贴着自己守的那条路的路肩。
+// 原来是一张写死的 [x,y] 坐标表（[570,885] 之类），弯道形状一改，塔就悬空在草地上，
+// 看着不在路边、射程也只勉强够到路缘。现在给每座塔 (lane, x)，y 由 getRoadY 算出来。
+const TOWER_LANE_X = [1620, 2150, 2800];              // 世界坐标 x；三路在这些 x 上分离 ≥60%，塔不会互相叠
+const TOFF = Math.round(205 * GEO);                   // 塔心离路心的侧向偏移（半路宽 329 + 路肩 40）
+const MY_TOWER_POS = (() => {
+  const arr = [];
+  for (let lane = 0; lane < 3; lane++) {
+    const sign = lane === 0 ? -1 : 1;                 // 上路塔站路上侧，中路/下路塔站下侧（上下对称）
+    for (const tx of TOWER_LANE_X) arr.push([tx, Math.round(getRoadY(lane, tx) + sign * TOFF), lane, sign]);
+  }
+  return arr;
+})();
 // ============ 名字库 ============
 const NAME_POOLS = {
   melee: ['赵铁柱','王大力','李铁山','张铁柱','刘大勇','陈石头','杨守义','黄开山','赵铁柱','孙铁柱','周大勇','吴铁牛','郑石头','马守山','朱开山','林铁柱','何大勇','高铁山','罗石头','郑守义','梁铁柱','宋大勇','唐铁牛','许石头','韩开山','冯铁柱','邓大勇','曹铁山','彭石头','萧守义','田铁柱','董大勇','袁铁牛','潘石头','蒋开山','蔡铁柱','余大勇','于铁山','杜石头','叶守义'],
@@ -653,18 +682,13 @@ function initGame() {
   const tAtk = 17; // 降低至1/3，避免英雄对塔完全没战斗力
   // 我方塔：[x, y] 绝对坐标（×3）
   // v14.43 塔位随 GEO 等比放大（原来写死坐标，地图一大就全挤在左边）
-  const myTowers = [
-    [570, 885], [570, 1275], [540, 393], [540, 1767],
-    [960, 621], [960, 1539], [1275, 195], [1275, 885],
-    [1275, 1275], [1275, 1965],
-  ].map(([tx, ty]) => [Math.round(tx * GEO), Math.round(ty * GEO)]);
-  myTowers.forEach(([tx, ty]) => {
-    game.towers.push({ x:tx, y:ty, lane:0, side:'my', isBase:false,
+  MY_TOWER_POS.forEach(([tx, ty, lane]) => {
+    game.towers.push({ x:tx, y:ty, lane:lane, side:'my', isBase:false,
       hp:TOWER_HP, maxHp:TOWER_HP, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
   });
-  // 敌方镜像
-  myTowers.forEach(([tx, ty]) => {
-    game.towers.push({ x:WORLD_W-tx, y:ty, lane:0, side:'enemy', isBase:false,
+  // 敌方严格镜像（x 镜像后 y 与 lane 不变，getRoadY 左右对称所以落点也对称）
+  MY_TOWER_POS.forEach(([tx, ty, lane]) => {
+    game.towers.push({ x:WORLD_W-tx, y:ty, lane:lane, side:'enemy', isBase:false,
       hp:TOWER_HP, maxHp:TOWER_HP, atk:tAtk, armor:0, flatArmor:0, baseArmor:0, atkType:'chaos', atkTimer:0, range:tRange, alive:true, armorType:'fort' });
   });
 
@@ -3582,8 +3606,8 @@ function updateUnits(game, dt) {
     if (u.hp<=0) return;
     if (u.st.polymorphed>0||u.st.iceBlock>0||u.st.stun>0) return;
 
-    // 移动速度：基础速度不变，仅受减速debuff影响（-50%）
-    let moveSpeed = u.speed;
+    // 移动速度：基础速度 × SPEED_MUL（大地图赶路补偿），再受减速debuff影响（-50%）
+    let moveSpeed = u.speed * (u.isMonster ? 1 : SPEED_MUL);
     if (u.st.slow>0) moveSpeed *= 0.5;
 
     // 狂暴：血越少攻速越快（最多+60%攻速）
@@ -4085,12 +4109,11 @@ function render() {
   }
 
   // 路：三条独立直路（四层描边：外沿暗边 → 路面 → 路心亮带 → 中线虚线）
-  const lanePath = (y) => {
+  const lanePath = (lane) => {
+    const pts = lanePolyline(lane);
     ctx.beginPath();
-    ctx.moveTo(MY_BASE_X, LANE_Y[1]);
-    ctx.quadraticCurveTo(ROAD_BEND_MY, y, ROAD_STRAIGHT_X0, y);
-    ctx.lineTo(ROAD_STRAIGHT_X1, y);
-    ctx.quadraticCurveTo(ROAD_BEND_EN, y, EN_BASE_X, LANE_Y[1]);
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.stroke();
   };
   ctx.lineCap = 'round';
@@ -4098,19 +4121,19 @@ function render() {
   // 1) 外沿暗边（比路面宽 20，让路"嵌进"地面）
   ctx.lineWidth = Math.round(386 * GEO);
   ctx.strokeStyle = shadeColor(T.road, -26);
-  LANE_Y.forEach(y => lanePath(y));
+  [0,1,2].forEach(l => lanePath(l));
   // 2) 路面主体
   ctx.lineWidth = Math.round(366 * GEO);
   ctx.strokeStyle = T.road;
-  LANE_Y.forEach(y => lanePath(y));
+  [0,1,2].forEach(l => lanePath(l));
   // 3) 路心亮带（被踩实的中央通道）
   ctx.lineWidth = Math.round(246 * GEO);
   ctx.strokeStyle = shadeColor(T.road, 12);
-  LANE_Y.forEach(y => lanePath(y));
+  [0,1,2].forEach(l => lanePath(l));
   // 4) 两侧路缘细线
   ctx.lineWidth = 3;
   ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-  LANE_Y.forEach(y => lanePath(y));
+  [0,1,2].forEach(l => lanePath(l));
   ctx.lineCap = 'butt';
 
   // 中线虚线（沿路心，每 90px 一段）
@@ -4120,8 +4143,9 @@ function render() {
   ctx.strokeStyle = 'rgba(255,255,255,0.16)';
   LANE_Y.forEach(y => {
     ctx.beginPath();
-    ctx.moveTo(1140, y);
-    ctx.lineTo(3060, y);
+    // v14.45b 原来写死 1140/3060（GEO=1 基准），地图放大后中线虚线只画在原地一小段
+    ctx.moveTo(ROAD_STRAIGHT_X0, y);
+    ctx.lineTo(ROAD_STRAIGHT_X1, y);
     ctx.stroke();
   });
   ctx.restore();
@@ -5489,15 +5513,33 @@ function render() {
   const mmScaleX = mmW / WORLD_W, mmScaleY = mmH / WORLD_H;
   ctx.save();
   rr(ctx, mmX, mmY, mmW, mmH, 8);
+  // v14.44c 小地图底不透明：原来 minimapBg 带透明度，底下的世界地形会透出来，
+  // 左半边常比右半边多透一条路缘/岩壁阴影，看起来就是"左右不一样"
+  ctx.fillStyle = T.bg; ctx.fill();
   ctx.fillStyle = T.minimapBg; ctx.fill();
   ctx.clip();
+  // 野区块缩略（v14.44c：小地图原来完全不画野区，远看等于没有野区）
+  ctx.fillStyle = 'rgba(20,70,32,0.55)';
+  WILD_ZONES.forEach(z => {
+    ctx.fillRect(mmX + z.x*mmScaleX, mmY + z.y*mmScaleY, z.w*mmScaleX, z.h*mmScaleY);
+  });
+  // 营地小点（红/蓝）
+  CAMP_DEFS.forEach(cd => {
+    ctx.fillStyle = cd.kind === 'red' ? 'rgba(235,110,90,0.95)' : 'rgba(90,150,235,0.95)';
+    ctx.beginPath();
+    ctx.arc(mmX + cd.x*mmScaleX, mmY + cd.y*mmScaleY, 3, 0, Math.PI*2);
+    ctx.fill();
+  });
   // 道路缩略
+  // v14.44c 修左右不一致：这里原来写死 600 / 1140 / 3060（GEO=1 的基准值），
+  // 而右侧用的是派生后的 ROAD_BEND_EN / EN_BASE_X，导致小地图左边弯道挤在极左、
+  // 右边弯道跑到远处，看上去左右形状不同。改用 ROAD_BEND_MY / ROAD_STRAIGHT_X0 / X1
   ctx.strokeStyle = T.road; ctx.lineWidth = 6; ctx.lineCap = 'round';
   LANE_Y.forEach(y => {
     ctx.beginPath();
     ctx.moveTo(mmX + MY_BASE_X*mmScaleX, mmY + LANE_Y[1]*mmScaleY);
-    ctx.quadraticCurveTo(mmX + 600*mmScaleX, mmY + y*mmScaleY, mmX + 1140*mmScaleX, mmY + y*mmScaleY);
-    ctx.lineTo(mmX + 3060*mmScaleX, mmY + y*mmScaleY);
+    ctx.quadraticCurveTo(mmX + ROAD_BEND_MY*mmScaleX, mmY + y*mmScaleY, mmX + ROAD_STRAIGHT_X0*mmScaleX, mmY + y*mmScaleY);
+    ctx.lineTo(mmX + ROAD_STRAIGHT_X1*mmScaleX, mmY + y*mmScaleY);
     ctx.quadraticCurveTo(mmX + ROAD_BEND_EN*mmScaleX, mmY + y*mmScaleY, mmX + EN_BASE_X*mmScaleX, mmY + LANE_Y[1]*mmScaleY);
     ctx.stroke();
   });
@@ -6183,38 +6225,94 @@ function buildTerrainTexture(themeName) {
   g.fillStyle = lg;
   g.fillRect(0, 0, WORLD_W, WORLD_H);
 
-  // ---- 2. 四块野区林地（多椭圆叠拼 + 径向渐隐，形成自然林地轮廓）----
+  // ---- 2. 四块野区林地（v14.44 重做：整块底色 + 边界树墙 + 密林树冠，做到一眼能看出"这是野区"）----
   WILD_ZONES.forEach((z, zi) => {
     const cx = z.x + z.w * 0.5, cy = z.y + z.h * 0.5;
-    // 主形：6 个错位渐隐椭圆叠加，避免出现规整的椭圆边界
-    for (let k = 0; k < 6; k++) {
-      const ox = (rnd() - 0.5) * z.w * 0.22;
-      const oy = (rnd() - 0.5) * z.h * 0.30;
-      const rx = z.w * 0.42 * (0.80 + rnd() * 0.35);
-      const ry = z.h * 0.46 * (0.72 + rnd() * 0.38);
-      const rd = g.createRadialGradient(cx + ox, cy + oy, 0, cx + ox, cy + oy, Math.max(rx, ry));
-      rd.addColorStop(0.00, 'rgba(12,36,18,0.42)');
-      rd.addColorStop(0.48, 'rgba(17,48,24,0.30)');
-      rd.addColorStop(0.78, 'rgba(22,58,28,0.13)');
-      rd.addColorStop(1.00, 'rgba(26,64,32,0)');
-      g.fillStyle = rd;
-      g.beginPath(); g.ellipse(cx + ox, cy + oy, rx, ry, rnd() * 2, 0, Math.PI * 2); g.fill();
+
+    // 2a. 整块深色底：不再是"渐隐到看不见"，而是明确压暗成林地
+    const base = g.createLinearGradient(0, z.y, 0, z.y + z.h);
+    base.addColorStop(0.00, 'rgba(6,26,12,0.0)');
+    base.addColorStop(0.12, 'rgba(8,32,15,0.62)');
+    base.addColorStop(0.50, 'rgba(10,40,18,0.78)');
+    base.addColorStop(0.88, 'rgba(8,32,15,0.62)');
+    base.addColorStop(1.00, 'rgba(6,26,12,0.0)');
+    g.fillStyle = base;
+    g.fillRect(z.x, z.y, z.w, z.h);
+
+    // 2b. 左右两端压深，形成"从这条路钻进去"的暗口
+    [-1, 1].forEach(sgn => {
+      const ex = sgn < 0 ? z.x : z.x + z.w;
+      const eg = g.createLinearGradient(ex, 0, ex + sgn * z.w * 0.22, 0);
+      eg.addColorStop(0, 'rgba(4,18,9,0.55)');
+      eg.addColorStop(1, 'rgba(4,18,9,0)');
+      g.fillStyle = eg;
+      g.fillRect(Math.min(ex, ex + sgn * z.w * 0.22), z.y, z.w * 0.22, z.h);
+    });
+
+    // 2c. 内部泥地/苔藓斑块（打散平面感）
+    // v14.44b 修左右不一致：只在左半地图的野区生成，再按 WORLD_W-x 镜像双绘，
+    // 保证左右两块野区的斑块位置/形状/旋转完全一致（原来两侧各自随机，一眼能看出不一样）
+    if (z.x < WORLD_W * 0.5) {
+      for (let i = 0; i < 34; i++) {
+        const px = z.x + rnd() * z.w, py = z.y + rnd() * z.h;
+        const pr = 22 + rnd() * 66;
+        const fill = rnd() < 0.6 ? 'rgba(18,58,26,0.30)' : 'rgba(50,42,26,0.22)';
+        const rot = rnd() * 3.14;
+        [-1, 1].forEach(sgn => {
+          g.fillStyle = fill;
+          g.beginPath();
+          g.ellipse(sgn < 0 ? px : WORLD_W - px, py, pr, pr * 0.56, sgn < 0 ? rot : -rot, 0, Math.PI * 2);
+          g.fill();
+        });
+      }
     }
 
-    // 内部苔藓 / 泥地斑块（打散平面感）
-    for (let i = 0; i < 22; i++) {
-      const px = z.x + rnd() * z.w, py = z.y + rnd() * z.h;
-      const pr = 18 + rnd() * 54;
-      g.fillStyle = rnd() < 0.55 ? 'rgba(28,72,34,0.18)' : 'rgba(56,46,30,0.14)';
-      g.beginPath(); g.ellipse(px, py, pr, pr * 0.58, rnd() * 3.14, 0, Math.PI * 2); g.fill();
+    // 2d. 密林树冠：深色球团 + 顶部高光，密度明显高于普通草地
+    const treeN = Math.round(46 * (z.w * z.h) / (1140 * 312)); // 面积越大树越多
+    // v14.44b 同 2c：只左半生成，镜像双绘，左右树冠分布完全一致
+    if (z.x < WORLD_W * 0.5) {
+      for (let i = 0; i < treeN; i++) {
+        const px = z.x + 14 + rnd() * (z.w - 28);
+        const py = z.y + 10 + rnd() * (z.h - 20);
+        // 避开中央换线小径，别把走廊堵成一堵墙
+        if (Math.abs(px - cx) < 96) continue;
+        const r = 15 + rnd() * 16;
+        [-1, 1].forEach(sgn => {
+          const bx = sgn < 0 ? px : WORLD_W - px;      // 镜像后的 x
+          const s2 = sgn < 0 ? 1 : -1;                 // 形状整体翻面，保证是"镜像"而不是"复制"
+          g.fillStyle = 'rgba(9,34,16,0.86)';
+          g.beginPath(); g.arc(bx, py, r, 0, Math.PI * 2); g.fill();
+          g.fillStyle = 'rgba(34,86,44,0.55)';
+          g.beginPath(); g.arc(bx + s2 * r * 0.22, py - r * 0.26, r * 0.66, 0, Math.PI * 2); g.fill();
+          g.fillStyle = 'rgba(74,132,74,0.30)';
+          g.beginPath(); g.arc(bx + s2 * r * 0.36, py - r * 0.42, r * 0.28, 0, Math.PI * 2); g.fill();
+        });
+      }
     }
 
-    // 野区中心微光（引导视线，暗示中立资源点）
-    const hi = g.createRadialGradient(cx, cy, 0, cx, cy, 170);
-    hi.addColorStop(0, 'rgba(120,205,150,0.09)');
-    hi.addColorStop(1, 'rgba(120,205,150,0)');
+    // 2e. 野区中心微光（引导视线，暗示中立资源点）
+    const hi = g.createRadialGradient(cx, cy, 0, cx, cy, Math.round(200 * (z.h / 468)));
+    hi.addColorStop(0, 'rgba(130,220,160,0.13)');
+    hi.addColorStop(1, 'rgba(130,220,160,0)');
     g.fillStyle = hi;
-    g.beginPath(); g.arc(cx, cy, 170, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(cx, cy, Math.round(200 * (z.h / 468)), 0, Math.PI * 2); g.fill();
+  });
+
+  // ---- 2f. 野区营地地标：红/蓝光圈 + 碎岩台，让小地图与世界图都能认出"这里有个刷怪点" ----
+  CAMP_DEFS.forEach(cd => {
+    const col = cd.kind === 'red' ? '235,90,70' : '90,150,235';
+    const rg = g.createRadialGradient(cd.x, cd.y, 0, cd.x, cd.y, Math.round(120 * GEO / 1.8));
+    rg.addColorStop(0, `rgba(${col},0.22)`);
+    rg.addColorStop(0.55, `rgba(${col},0.10)`);
+    rg.addColorStop(1, `rgba(${col},0)`);
+    g.fillStyle = rg;
+    g.beginPath(); g.arc(cd.x, cd.y, Math.round(120 * GEO / 1.8), 0, Math.PI * 2); g.fill();
+    // 地面碎岩台
+    const plR = Math.round(46 * GEO / 1.8);
+    g.fillStyle = 'rgba(52,46,38,0.70)';
+    g.beginPath(); g.ellipse(cd.x, cd.y + plR * 0.2, plR, plR * 0.52, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = `rgba(${col},0.55)`; g.lineWidth = 3;
+    g.beginPath(); g.ellipse(cd.x, cd.y + plR * 0.2, plR * 0.92, plR * 0.46, 0, 0, Math.PI * 2); g.stroke();
   });
 
   // ---- 2.5 v14.4 野区走廊（英雄可穿行的路间小径，视觉提示"三路可互通"）----
@@ -6228,40 +6326,58 @@ function buildTerrainTexture(themeName) {
     lg2.addColorStop(1.00, 'rgba(168,140,100,0)');
     g.fillStyle = lg2;
     g.fillRect(mid - 120, z.y - 40, 240, z.h + 80);
+    // v14.44b 石粒/踏痕也只在左半生成再镜像，左右走廊的碎石位置一致
+    if (z.x >= WORLD_W * 0.5) return;
     // 路缘：两侧细碎浅色石粒，把"这条路是通的"读出来
     for (let i = 0; i < 26; i++) {
       const py = z.y - 30 + (z.h + 60) * (i / 25);
       [-1, 1].forEach(sgn => {
-        g.fillStyle = 'rgba(228,208,170,0.16)';
-        g.beginPath();
-        g.ellipse(mid + sgn * (86 + rnd() * 22), py + (rnd() - 0.5) * 12, 7 + rnd() * 6, 4 + rnd() * 4, rnd() * 3.14, 0, Math.PI * 2);
-        g.fill();
+        const off = 86 + rnd() * 22, jy = (rnd() - 0.5) * 12, rew = 7 + rnd() * 6, reh = 4 + rnd() * 4, rot = rnd() * 3.14;
+        [mid + sgn * off, WORLD_W - (mid + sgn * off)].forEach(mx => {
+          g.fillStyle = 'rgba(228,208,170,0.16)';
+          g.beginPath();
+          g.ellipse(mx, py + jy, rew, reh, rot, 0, Math.PI * 2);
+          g.fill();
+        });
       });
     }
     // 踏痕脚印感：沿走廊纵向排布的小亮点
     for (let i = 0; i < 7; i++) {
       const py = z.y - 20 + (z.h + 40) * (i / 6);
-      g.fillStyle = 'rgba(226,202,160,0.075)';
-      g.beginPath(); g.ellipse(mid + (rnd() - 0.5) * 90, py, 26, 13, rnd() * 3.14, 0, Math.PI * 2); g.fill();
+      const dx = (rnd() - 0.5) * 90, rot = rnd() * 3.14;
+      [mid + dx, WORLD_W - (mid + dx)].forEach(mx => {
+        g.fillStyle = 'rgba(226,202,160,0.075)';
+        g.beginPath(); g.ellipse(mx, py, 26, 13, rot, 0, Math.PI * 2); g.fill();
+      });
     }
   });
 
   // ---- 3. 地图边界岩壁（四周环绕，避免"画布露边"的廉价感）----
-  const drawRockBand = (x, y, w, h, horizontal) => {
+  // v14.44b 岩壁也改成"生成一次 + 四向镜像"，原来四条边各自随机，左右/上下边界长得不一样
+  const drawRockBand = (horizontal) => {
     for (let i = 0; i < 34; i++) {
       const t = i / 33;
-      const px = horizontal ? x + t * w : x + (rnd() - 0.5) * 40;
-      const py = horizontal ? y + (rnd() - 0.5) * 40 : y + t * h;
       const rw = horizontal ? 70 + rnd() * 60 : 46 + rnd() * 40;
       const rh = horizontal ? 42 + rnd() * 34 : 70 + rnd() * 60;
-      g.fillStyle = `rgba(${38 + rnd() * 18 | 0},${40 + rnd() * 18 | 0},${52 + rnd() * 22 | 0},0.55)`;
-      g.beginPath(); g.ellipse(px, py, rw * 0.5, rh * 0.5, rnd() * 3.14, 0, Math.PI * 2); g.fill();
+      const col = `rgba(${38 + rnd() * 18 | 0},${40 + rnd() * 18 | 0},${52 + rnd() * 22 | 0},0.55)`;
+      const rot = rnd() * 3.14;
+      const jit = (rnd() - 0.5) * 40;
+      let pts;
+      if (horizontal) {
+        const px = t * WORLD_W * 0.5, py = 28*GEO + jit;
+        pts = [[px, py], [WORLD_W - px, py], [px, WORLD_H - py], [WORLD_W - px, WORLD_H - py]];
+      } else {
+        const py = t * WORLD_H, px = 28*GEO + jit;
+        pts = [[px, py], [WORLD_W - px, py]];
+      }
+      g.fillStyle = col;
+      pts.forEach(([x2, y2]) => {
+        g.beginPath(); g.ellipse(x2, y2, rw * 0.5, rh * 0.5, rot, 0, Math.PI * 2); g.fill();
+      });
     }
   };
-  drawRockBand(0, 28*GEO, WORLD_W, 0, true);
-  drawRockBand(0, WORLD_H - 28*GEO, WORLD_W, 0, true);
-  drawRockBand(28*GEO, 0, 0, WORLD_H, false);
-  drawRockBand(WORLD_W - 28*GEO, 0, 0, WORLD_H, false);
+  drawRockBand(true);
+  drawRockBand(false);
 
   // ---- 4. 中央遗迹广场（交战区地标）----
   const cx = WORLD_W / 2, cy = WORLD_H / 2;
@@ -6317,13 +6433,20 @@ function buildDecorations() {
     if (x < 250*GEO && Math.abs(y - LANE_Y[1]) < 250*GEO) return;
     if (x > (4200-250)*GEO && Math.abs(y - LANE_Y[1]) < 250*GEO) return;
     // 塔位净空
-    for (const tx of MY_TOWER_X) for (const ly of LANE_Y) if (Math.hypot(x-tx, y-ly) < 95) return;
-    for (const tx of EN_TOWER_X) for (const ly of LANE_Y) if (Math.hypot(x-tx, y-ly) < 95) return;
+    for (const [tx, ty] of MY_TOWER_POS) if (Math.hypot(x-tx, y-ty) < 95) return;
+    for (const [tx, ty] of MY_TOWER_POS) if (Math.hypot(x-(WORLD_W-tx), y-ty) < 95) return;
     decorations.push({ x, y, kind, s });
   };
 
+  // v14.44b 装饰物左右镜像：只生成左半地图的，再按 WORLD_W-x 复刻一份，
+  // 修掉原来"两侧各随机一次"导致左右树/石/草丛分布对不上的问题
+  const pushPair = (x, y, kind, sc) => {
+    pushIfClear(x, y, kind, sc);
+    pushIfClear(WORLD_W - x, y, kind, sc);
+  };
   // 1) 四块野区的林线（沿椭圆外缘成环，形成"树林围空场"）
   WILD_ZONES.forEach(z => {
+    if (z.x >= WORLD_W * 0.5) return; // 右半块由左半镜像生成，跳过
     const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
     const rx = z.w / 2 + 30, ry = z.h / 2 + 16;
     const n = Math.floor((z.w + z.h) / 40);
@@ -6333,35 +6456,42 @@ function buildDecorations() {
       const k = 0.94 + rnd() * 0.24;
       const px = cx + Math.cos(a) * rx * k;
       const py = cy + Math.sin(a) * ry * k;
-      pushIfClear(px, py, 'tree', 0.70 + rnd() * 0.55);
+      pushPair(px, py, 'tree', 0.70 + rnd() * 0.55);
       if (rnd() < 0.42) {
-        pushIfClear(px + (rnd() - 0.5) * 52, py + (rnd() - 0.5) * 34, 'tree', 0.60 + rnd() * 0.45);
+        pushPair(px + (rnd() - 0.5) * 52, py + (rnd() - 0.5) * 34, 'tree', 0.60 + rnd() * 0.45);
       }
     }
     // 野区内部点缀：岩石 + 草丛（中心留空给将来的中立野怪）
     for (let i = 0; i < 9; i++) {
       const a = rnd() * Math.PI * 2, r = 0.30 + rnd() * 0.42;
-      pushIfClear(cx + Math.cos(a) * rx * r, cy + Math.sin(a) * ry * r,
+      pushPair(cx + Math.cos(a) * rx * r, cy + Math.sin(a) * ry * r,
         rnd() < 0.55 ? 'rock' : 'bush', 0.65 + rnd() * 0.5);
     }
   });
 
   // 2) 地图四周密林边界（与地形岩壁带叠加，形成包裹感）
-  for (let x = 70; x < WORLD_W - 70; x += 44) {
-    pushIfClear(x, 62 + rnd() * 46, 'tree', 0.80 + rnd() * 0.5);
-    pushIfClear(x, WORLD_H - 62 - rnd() * 46, 'tree', 0.80 + rnd() * 0.5);
+  // 只在左半/上半生成，四向镜像（左右 + 上下），四条边界长得一致
+  for (let x = 70; x < WORLD_W * 0.5; x += 44) {
+    const jt = 62 + rnd() * 46, sc = 0.80 + rnd() * 0.5;
+    pushIfClear(x, jt, 'tree', sc);
+    pushIfClear(WORLD_W - x, jt, 'tree', sc);
+    pushIfClear(x, WORLD_H - jt, 'tree', sc);
+    pushIfClear(WORLD_W - x, WORLD_H - jt, 'tree', sc);
   }
-  for (let y = 70; y < WORLD_H - 70; y += 44) {
-    pushIfClear(62 + rnd() * 46, y, 'tree', 0.80 + rnd() * 0.5);
-    pushIfClear(WORLD_W - 62 - rnd() * 46, y, 'tree', 0.80 + rnd() * 0.5);
+  for (let y = 70; y < WORLD_H * 0.5; y += 44) {
+    const jx = 62 + rnd() * 46, sc = 0.80 + rnd() * 0.5;
+    pushIfClear(jx, y, 'tree', sc);
+    pushIfClear(WORLD_W - jx, y, 'tree', sc);
+    pushIfClear(jx, WORLD_H - y, 'tree', sc);
+    pushIfClear(WORLD_W - jx, WORLD_H - y, 'tree', sc);
   }
 
   // 3) 路旁点缀（贴路边的小灌木与碎石，让道路两侧有细节）
   for (let i = 0; i < 80; i++) {
     const lane = Math.floor(rnd() * 3);
-    const x = 420 + rnd() * (WORLD_W - 840);
+    const x = 420 + rnd() * (WORLD_W * 0.5 - 420);   // 只取左半，右半靠镜像
     const y = LANE_Y[lane] + (rnd() < 0.5 ? -1 : 1) * (205 + rnd() * 60);
-    pushIfClear(x, y, rnd() < 0.72 ? 'bush' : 'rock', 0.55 + rnd() * 0.4);
+    pushPair(x, y, rnd() < 0.72 ? 'bush' : 'rock', 0.55 + rnd() * 0.4);
   }
 }
 // ---- 路面碎石（静态分布）----
@@ -6372,9 +6502,11 @@ function buildLanePebbles() {
   const rnd = () => { seed = (seed*1103515245 + 12345) & 0x7fffffff; return seed/0x7fffffff; };
   for (let i = 0; i < 430; i++) {
     const lane = Math.floor(rnd() * 3);
-    const x = 200 + rnd() * (WORLD_W - 400);
-    const y = getRoadY(lane, x) + (rnd() - 0.5) * 330;
-    lanePebbles.push({ x: x, y: y, r: 1.4 + rnd() * 3.2 });
+    // 只取左半地图，右半用 x 镜像 + 同一 lane 镜像后的路面 y，保证左右碎石一致
+    const x = 200 + rnd() * (WORLD_W * 0.5 - 200);
+    const dy = (rnd() - 0.5) * 330, r = 1.4 + rnd() * 3.2;
+    lanePebbles.push({ x: x, y: getRoadY(lane, x) + dy, r: r });
+    lanePebbles.push({ x: WORLD_W - x, y: getRoadY(lane, WORLD_W - x) + dy, r: r });
   }}
 
 function drawDecorations() {
@@ -8099,7 +8231,7 @@ function resizeCanvas() {
   }
   // 游戏仅横屏：默认视野拉远看更多地图并纵向居中，内容饱满不逼仄。用户手动调过后不再覆盖。
   if (!zoomManual) {
-    zoom = Math.round((0.56 / GEO) * 100) / 100;
+    zoom = 0.50;
     viewY = Math.max(0, (WORLD_H - VIEW_H/zoom)/2);
     viewX = 0;
     clampView();
