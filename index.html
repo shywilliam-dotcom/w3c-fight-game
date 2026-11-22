@@ -89,7 +89,7 @@
 <script>
 window.addEventListener('error',function(e){window.__LASTERR=(e.message+' L'+e.lineno+':'+e.colno);});
 // ============ 布局 ============
-const VERSION = 'v14.45c';
+const VERSION = 'v14.47';
 const UPDATE_TIME = new Date().toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
 
 // ============ 调试开关 ============
@@ -293,7 +293,11 @@ const BARRACK_SLOTS = [
 // v14.45b 塔位改为按道路派生：塔永远贴着自己守的那条路的路肩。
 // 原来是一张写死的 [x,y] 坐标表（[570,885] 之类），弯道形状一改，塔就悬空在草地上，
 // 看着不在路边、射程也只勉强够到路缘。现在给每座塔 (lane, x)，y 由 getRoadY 算出来。
-const TOWER_LANE_X = [1620, 2150, 2800];              // 世界坐标 x；三路在这些 x 上分离 ≥60%，塔不会互相叠
+// v14.46 塔密度按王者荣耀等比：单路（基地→基地 7200px）上高地塔 / 二塔 / 一塔分别在 14% / 26% / 40% 处
+//   180 + 7200*0.14 = 1188 → 取 1200（高地塔，弯道咽喉里）
+//   180 + 7200*0.26 = 2052 → 直道起点，二塔
+//   180 + 7200*0.40 = 3060 → 直道中段靠中线，一塔
+const TOWER_LANE_X = [1200, 2052, 3060];
 const TOFF = 0;                                        // 塔立在路心（主人口径：立到各路中间，坐标好找、视觉清楚）
 const MY_TOWER_POS = (() => {
   const arr = [];
@@ -2816,6 +2820,7 @@ function applyHeroBehavior(u, dt, moveSpeed) {
 
 // 位置约束（道路中心/基地跨路/边界）
 function clampUnitPos(u) {
+  if (u._duel) return;   // v14.47 决斗面板单位在擂台自由移动，不锁路道
   const EDGE = Math.round(30 * GEO);
   if (u.x<EDGE) u.x=EDGE;
   if (u.x>WORLD_W-EDGE) u.x=WORLD_W-EDGE;
@@ -3015,6 +3020,31 @@ function legacyMyHeroAuto(u, dt, moveSpeed, atkSpd) {
   return false; // 其余目标选择/追击/推进交给 simpleCombatMove（v12原版主流程）
 }
 
+// v14.47 决斗面板专用：不依赖 AI 寻敌，直接朝对手走、进射程就打
+// （旧面板单位是 minion 逻辑，两边各自沿路"行军"永远不会交手，只有火箭炮的全屏被动能输出）
+function duelTick(u, dt, moveSpeed, atkSpd, game) {
+  u.atkTimer = (u.atkTimer || 0) - dt;
+  let foe = null, fd = Infinity;
+  for (const o of game.units) {
+    if (o.side === u.side || o.hp <= 0) continue;
+    const d = Math.hypot(o.x - u.x, o.y - u.y);
+    if (d < fd) { fd = d; foe = o; }
+  }
+  if (!foe) return;
+  const inRange = u.range + (u.size || 10) + (foe.size || 10);
+  if (fd <= inRange) {
+    if (u.atkTimer <= 0 && (u.st.stun || 0) <= 0 && (u.st.polymorphed || 0) <= 0) {
+      doAttack(u, foe, UNIT_TYPES[u.type] || {});
+      u.atkTimer = 1 / Math.max(0.05, atkSpd);
+      u.animState = u.atkType === 'magic' ? 'cast' : 'attack';
+    }
+  } else {
+    const dx = (foe.x - u.x) / fd, dy = (foe.y - u.y) / fd;
+    u.x += dx * moveSpeed * dt;
+    u.y += dy * moveSpeed * dt;
+    u.animState = 'walk';
+  }
+}
 function simpleCombatMove(u, dt, moveSpeed, atkSpd) {
   const def = UNIT_TYPES[u.type] || { color:'#fff' };
   const baseX = u.side==='my'?MY_BASE_X:EN_BASE_X;
@@ -3628,6 +3658,8 @@ function updateUnits(game, dt) {
     // 破甲弩手专注射击：同一目标每次攻击攻速+6%，最高300%
     if (u.focusFire>0 && u.focusStacks>0) atkSpd *= (1 + Math.min(3.0, u.focusStacks * u.focusFire));
 
+    // v14.47 决斗面板单位：直接一对一互殴，不走兵线 AI
+    if (u._duel) { duelTick(u, dt, moveSpeed, atkSpd, game); return; }
     // ===== 玩家手动操控优先：有手动指令的己方英雄跳过所有AI =====
     if (u.isHero && u.side==='my' && u._playerControlled) {
       playerControlUpdate(u, dt, moveSpeed, atkSpd);
@@ -7345,7 +7377,7 @@ function createDuelUnit(type, side, lv, x) {
     flatArmor: def.armor || 0, baseArmor: def.armor || 0,
     hp:Math.round(def.hp*mul), maxHp:Math.round(def.hp*mul),
     atk:Math.round(def.atk*mul), atkSpeed:def.atkSpeed,
-    range:def.range*rangeMul, speed:def.speed*speedMul, atkTimer:0.3,
+    range:def.range*rangeMul*SCALE, speed:def.speed*speedMul, atkTimer:0.3, _duel:true,
     crit:['cannon','rocket','tesla','siege'].includes(type)?0:(type==='fighter'?0.10:0.05)*mul,
     dodge:['cannon','rocket','tesla','siege'].includes(type)?0:(type==='fighter'?0.15:0.05)*mul,
     instantKill:0, polymorpth:0,
