@@ -7545,7 +7545,11 @@ function updateDuel(dt) {
   d.bAttackAnim = Math.max(0, d.bAttackAnim - dt*3);
 
   // ===== 核心：复用主游戏的单位更新逻辑（移动/攻击/技能/召唤物/dot全部一致）=====
-  updateUnits(d.game, dt);
+  // v14.48：doAttack 内部大量技能（溅射/群伤/连锁闪电/法师治疗/大招范围伤害）读的是全局 game，
+  // 而决斗用的是 duelGame —— 不切换的话这些技能在面板里会去扫一局空战场，永远不触发。
+  const _realGame = game;
+  game = d.game;
+  try { updateUnits(d.game, dt); } finally { game = _realGame; }
 
   // 胜负判定
   if (d.isMulti) {
